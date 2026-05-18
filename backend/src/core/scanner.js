@@ -230,19 +230,30 @@ function buildTimeWindow(timeWindow) {
 
   switch (kind) {
     case 'live':
-      return { from: null, to: new Date(now.getTime() + 2 * 3600000).toISOString() };
+      return { from: null, to: toOddsApiIso(new Date(now.getTime() + 2 * 3600000)) };
     case 'next24':
-      return { from: now.toISOString(), to: new Date(now.getTime() + 24 * 3600000).toISOString() };
+      return { from: toOddsApiIso(now), to: toOddsApiIso(new Date(now.getTime() + 24 * 3600000)) };
     case 'next48':
-      return { from: now.toISOString(), to: new Date(now.getTime() + 48 * 3600000).toISOString() };
+      return { from: toOddsApiIso(now), to: toOddsApiIso(new Date(now.getTime() + 48 * 3600000)) };
     case 'custom':
       return {
-        from: now.toISOString(),
-        to: new Date(now.getTime() + (hours || 24) * 3600000).toISOString()
+        from: toOddsApiIso(now),
+        to: toOddsApiIso(new Date(now.getTime() + (hours || 24) * 3600000))
       };
     default:
       return { from: null, to: null };
   }
+}
+
+/**
+ * Formate une Date au format ISO 8601 exigé par The Odds API :
+ * `YYYY-MM-DDTHH:MM:SSZ` (sans millisecondes).
+ * `Date#toISOString()` produit `...sss.SSSZ`, ce qui déclenche une erreur 422.
+ * @param {Date} date
+ * @returns {string}
+ */
+function toOddsApiIso(date) {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 /**
