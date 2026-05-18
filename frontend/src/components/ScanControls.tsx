@@ -81,7 +81,11 @@ interface Props {
 export default function ScanControls({ onScan, loading = false }: Props) {
   const [mode, setMode] = useState<'full' | 'optimized'>('full')
   const [selectedSports, setSelectedSports] = useState<string[]>(['soccer_epl'])
-  const [selectedMarkets, setSelectedMarkets] = useState<string[]>(['h2h'])
+  // Par défaut : tous les marchés 2-way cochés. Le moteur rejette
+  // automatiquement les marchand qui s'avèrent à 3+ issues (1X2 football).
+  const [selectedMarkets, setSelectedMarkets] = useState<string[]>(
+    MARKET_KEYS.map((m) => m.key)
+  )
   const [selectedBookmakers, setSelectedBookmakers] = useState<string[]>([]) // vide = tous (regions=eu)
   const [timeWindowKind, setTimeWindowKind] = useState<'live' | 'next24' | 'next48' | 'custom'>('next24')
   const [customHours, setCustomHours] = useState(24)

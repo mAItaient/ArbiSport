@@ -10,6 +10,7 @@ import * as theOddsApi from '../integrations/theOddsApiClient.js';
 import * as oddsApiIo from '../integrations/oddsApiIoClient.js';
 import { findOpportunities } from './arbitrageEngine.js';
 import { hotspots } from './analytics.js';
+import { apiKeyManager } from './apiKeyManager.js';
 import ArbitrageOpportunity from '../models/ArbitrageOpportunity.js';
 import ScanRun from '../models/ScanRun.js';
 import logger from '../utils/logger.js';
@@ -44,7 +45,24 @@ export async function runFullScan(params) {
 
     for (const provider of providers) {
       const client = getClient(provider);
-      if (!client) continue;
+      if (!client) {
+        logger.warn(`Provider ${provider} inconnu, ignoré`);
+        continue;
+      }
+
+      // Vérification préalable de clé dispo : évite d'appeler getOdds N fois
+      // (une par sport) et de générer N warnings identiques quand l'utilisateur
+      // n'a pas configuré ce provider. On vérifie en demandant une clé sans la consommer.
+      try {
+        const probeKey = apiKeyManager.getKeyForRequest(provider);
+        if (!probeKey) {
+          logger.warn(`Provider ${provider} : aucune clé API configurée, provider sauté (les autres providers continuent)`);
+          continue;
+        }
+      } catch (err) {
+        logger.warn(`Provider ${provider} indisponible : ${err.message}`);
+        continue;
+      }
 
       for (const sport of sports) {
         try {
@@ -72,7 +90,8 @@ export async function runFullScan(params) {
 
         } catch (err) {
           if (err.message.includes('Aucune clé API')) {
-            logger.warn(`Pas de clé disponible pour ${provider}, abandon du scan`);
+            // Toutes les clés du provider ont été épuisées en cours de scan.
+            logger.warn(`Clés ${provider} épuisées en cours de scan, passage au provider suivant`);
             break;
           }
           // 404 = sport inactif ou inconnu chez ce provider → warn discret
