@@ -4,29 +4,71 @@
 import { useState } from 'react'
 import type { ScanParams } from '../types'
 
-const SPORTS_POPULAIRES = [
-  { key: 'soccer_epl', label: 'Football – Premier League' },
-  { key: 'soccer_france_ligue_one', label: 'Football – Ligue 1' },
-  { key: 'soccer_spain_la_liga', label: 'Football – La Liga' },
-  { key: 'soccer_germany_bundesliga', label: 'Football – Bundesliga' },
-  { key: 'soccer_uefa_champs_league', label: 'Football – Champions League' },
-  { key: 'basketball_nba', label: 'Basketball – NBA' },
-  { key: 'tennis_atp_french_open', label: 'Tennis – Roland-Garros' },
-  { key: 'americanfootball_nfl', label: 'Football américain – NFL' },
+// Bookmakers disponibles (clés The Odds API)
+const BOOKMAKERS_LIST = [
+  { key: 'betclic',       label: 'Betclic' },
+  { key: 'unibet_fr',     label: 'Unibet' },
+  { key: 'pmu',           label: 'PMU' },
+  { key: 'winamax',       label: 'Winamax' },
+  { key: 'pinnacle',      label: 'Pinnacle' },
+  { key: 'betfair_ex_eu', label: 'Betfair' },
+  { key: 'sport888',      label: '888sport' },
+  { key: 'onexbet',       label: '1xBet' },
+  { key: 'betonlineag',   label: 'Betonline' },
+  { key: 'everygame',     label: 'Everygame' },
+  { key: 'mybookieag',    label: 'MyBookie' },
+  { key: 'betsson',       label: 'Betsson' },
+  { key: 'nordicbet',     label: 'Nordicbet' },
+  { key: 'marathonbet',   label: 'Marathonbet' },
+]
+
+const SPORTS_LIST = [
+  // Football
+  { key: 'soccer_epl',                  label: 'Football – Premier League' },
+  { key: 'soccer_france_ligue_one',     label: 'Football – Ligue 1' },
+  { key: 'soccer_spain_la_liga',        label: 'Football – La Liga' },
+  { key: 'soccer_germany_bundesliga',   label: 'Football – Bundesliga' },
+  { key: 'soccer_uefa_champs_league',   label: 'Football – Champions League' },
+  { key: 'soccer_italy_serie_a',        label: 'Football – Serie A' },
+  { key: 'soccer_uefa_europa_league',   label: 'Football – Europa League' },
+  // Basketball
+  { key: 'basketball_nba',              label: 'Basketball – NBA' },
+  { key: 'basketball_euroleague',       label: 'Basketball – EuroLeague' },
+  // Tennis
+  { key: 'tennis_atp_french_open',      label: 'Tennis – Roland-Garros' },
+  { key: 'tennis_wta_french_open',      label: 'Tennis WTA – Roland-Garros' },
+  { key: 'tennis_atp_wimbledon',        label: 'Tennis – Wimbledon' },
+  { key: 'tennis_atp_us_open',          label: 'Tennis – US Open' },
+  // MMA / UFC
+  { key: 'mma_mixed_martial_arts',      label: 'MMA – UFC / Bellator' },
+  // Football américain
+  { key: 'americanfootball_nfl',        label: 'Football américain – NFL' },
+  { key: 'americanfootball_ncaaf',      label: 'Football américain – NCAA' },
+  // Baseball
+  { key: 'baseball_mlb',                label: 'Baseball – MLB' },
+  // Hockey
+  { key: 'icehockey_nhl',               label: 'Hockey – NHL' },
+  // Rugby
+  { key: 'rugbyleague_nrl',             label: 'Rugby – NRL' },
+  { key: 'rugbyunion_premiership',      label: 'Rugby Union – Premiership' },
+  // Boxe
+  { key: 'boxing_boxing',               label: 'Boxe' },
+  // Cricket
+  { key: 'cricket_icc_world_cup',       label: 'Cricket – Coupe du monde' },
 ]
 
 const MARKET_KEYS = [
-  { key: 'h2h', label: 'Victoire/Défaite (H2H)' },
-  { key: 'totals', label: 'Total buts/points' },
-  { key: 'spreads', label: 'Handicap (Spreads)' },
-  { key: 'draw_no_bet', label: 'Victoire sans nul' },
+  { key: 'h2h',          label: 'Victoire/Défaite (H2H)' },
+  { key: 'totals',       label: 'Total buts/points' },
+  { key: 'spreads',      label: 'Handicap (Spreads)' },
+  { key: 'draw_no_bet',  label: 'Victoire sans nul' },
 ]
 
 const TIME_WINDOWS = [
-  { kind: 'live', label: 'En direct (live)' },
-  { kind: 'next24', label: 'Prochaines 24h' },
-  { kind: 'next48', label: 'Prochaines 48h' },
-  { kind: 'custom', label: 'Personnalisé' },
+  { kind: 'live',    label: 'En direct (live)' },
+  { kind: 'next24',  label: 'Prochaines 24h' },
+  { kind: 'next48',  label: 'Prochaines 48h' },
+  { kind: 'custom',  label: 'Personnalisé' },
 ] as const
 
 interface Props {
@@ -38,11 +80,15 @@ export default function ScanControls({ onScan, loading = false }: Props) {
   const [mode, setMode] = useState<'full' | 'optimized'>('full')
   const [selectedSports, setSelectedSports] = useState<string[]>(['soccer_epl'])
   const [selectedMarkets, setSelectedMarkets] = useState<string[]>(['h2h'])
+  const [selectedBookmakers, setSelectedBookmakers] = useState<string[]>([]) // vide = tous (regions=eu)
   const [timeWindowKind, setTimeWindowKind] = useState<'live' | 'next24' | 'next48' | 'custom'>('next24')
   const [customHours, setCustomHours] = useState(24)
   const [stakeTotal, setStakeTotal] = useState(100)
   const [minRoi, setMinRoi] = useState(0)
   const [providers, setProviders] = useState<string[]>(['theOddsApi'])
+  const [showAllSports, setShowAllSports] = useState(false)
+
+  const displayedSports = showAllSports ? SPORTS_LIST : SPORTS_LIST.slice(0, 10)
 
   function toggleItem(list: string[], setList: (v: string[]) => void, item: string) {
     setList(list.includes(item) ? list.filter(x => x !== item) : [...list, item])
@@ -57,6 +103,7 @@ export default function ScanControls({ onScan, loading = false }: Props) {
       providers,
       sports: selectedSports,
       marketKeys: selectedMarkets,
+      bookmakers: selectedBookmakers.length > 0 ? selectedBookmakers : undefined,
       timeWindow: timeWindowKind === 'custom'
         ? { kind: 'custom', hours: customHours }
         : { kind: timeWindowKind },
@@ -113,8 +160,8 @@ export default function ScanControls({ onScan, loading = false }: Props) {
       {/* Sports */}
       <div>
         <label className="label">Sports ({selectedSports.length} sélectionné(s))</label>
-        <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto border rounded-lg p-2">
-          {SPORTS_POPULAIRES.map(s => (
+        <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto border rounded-lg p-2">
+          {displayedSports.map(s => (
             <label key={s.key} className="flex items-center gap-2 cursor-pointer text-sm">
               <input
                 type="checkbox"
@@ -126,6 +173,41 @@ export default function ScanControls({ onScan, loading = false }: Props) {
             </label>
           ))}
         </div>
+        {!showAllSports && SPORTS_LIST.length > 10 && (
+          <button type="button" onClick={() => setShowAllSports(true)}
+            className="text-xs text-blue-600 mt-1 hover:underline">
+            + Voir tous les sports ({SPORTS_LIST.length})
+          </button>
+        )}
+      </div>
+
+      {/* Bookmakers */}
+      <div>
+        <label className="label">
+          Bookmakers
+          {selectedBookmakers.length === 0 && (
+            <span className="text-xs text-gray-400 ml-2">(tous par défaut)</span>
+          )}
+        </label>
+        <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto border rounded-lg p-2">
+          {BOOKMAKERS_LIST.map(b => (
+            <label key={b.key} className="flex items-center gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={selectedBookmakers.includes(b.key)}
+                onChange={() => toggleItem(selectedBookmakers, setSelectedBookmakers, b.key)}
+                className="rounded accent-green-600"
+              />
+              {b.label}
+            </label>
+          ))}
+        </div>
+        {selectedBookmakers.length > 0 && (
+          <button type="button" onClick={() => setSelectedBookmakers([])}
+            className="text-xs text-gray-500 mt-1 hover:underline">
+            ✕ Effacer la sélection (utiliser tous)
+          </button>
+        )}
       </div>
 
       {/* Marchés */}

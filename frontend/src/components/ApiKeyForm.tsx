@@ -1,5 +1,8 @@
 /**
- * Formulaire d'ajout d'une clé API.
+ * Formulaire simplifié d'ajout d'une clé API.
+ * - Checkbox fournisseur
+ * - Champ valeur clé
+ * - Quota pré-rempli automatiquement selon le fournisseur
  */
 import { useState } from 'react'
 import { createApiKey } from '../api/client'
@@ -8,13 +11,37 @@ interface Props {
   onSuccess: () => void
 }
 
+const PROVIDER_DEFAULTS = {
+  theOddsApi: {
+    label: 'The Odds API',
+    quota_limit: 500,
+    quota_period: 'monthly' as const,
+    hint: '500 req / mois — all sports, most bookmakers',
+    placeholder: 'Collez votre clé The Odds API',
+  },
+  oddsApiIo: {
+    label: 'Odds-API.io',
+    quota_limit: 100,
+    quota_period: 'hourly' as const,
+    hint: '100 req / heure — 2 bookmakers',
+    placeholder: 'Collez votre clé Odds-API.io',
+  },
+}
+
 export default function ApiKeyForm({ onSuccess }: Props) {
   const [provider, setProvider] = useState<'theOddsApi' | 'oddsApiIo'>('theOddsApi')
-  const [label, setLabel] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [planInfo, setPlanInfo] = useState('')
+  const [quotaLimit, setQuotaLimit] = useState<number>(500)
+  const [quotaPeriod, setQuotaPeriod] = useState<'hourly' | 'daily' | 'monthly'>('monthly')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  function handleProviderChange(p: 'theOddsApi' | 'oddsApiIo') {
+    setProvider(p)
+    setQuotaLimit(PROVIDER_DEFAULTS[p].quota_limit)
+    setQuotaPeriod(PROVIDER_DEFAULTS[p].quota_period)
+    setApiKey('')
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -24,13 +51,12 @@ export default function ApiKeyForm({ onSuccess }: Props) {
     try {
       await createApiKey({
         provider,
-        label,
+        label: PROVIDER_DEFAULTS[provider].label,
         api_key_value: apiKey,
-        plan_info: planInfo || undefined,
-      })
-      setLabel('')
+        quota_limit: quotaLimit,
+        quota_period: quotaPeriod,
+      } as Parameters<typeof createApiKey>[0])
       setApiKey('')
-      setPlanInfo('')
       onSuccess()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur lors de la création')
@@ -39,54 +65,69 @@ export default function ApiKeyForm({ onSuccess }: Props) {
     }
   }
 
+  const defaults = PROVIDER_DEFAULTS[provider]
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Sélection fournisseur */}
       <div>
         <label className="label">Fournisseur</label>
-        <select
-          value={provider}
-          onChange={e => setProvider(e.target.value as 'theOddsApi' | 'oddsApiIo')}
-          className="input"
-        >
-          <option value="theOddsApi">The Odds API</option>
-          <option value="oddsApiIo">Odds-API.io</option>
-        </select>
+        <div className="flex gap-4">
+          {(['theOddsApi', 'oddsApiIo'] as const).map(p => (
+            <label key={p} className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="provider"
+                value={p}
+                checked={provider === p}
+                onChange={() => handleProviderChange(p)}
+                className="accent-green-600"
+              />
+              <span className="text-sm font-medium">{PROVIDER_DEFAULTS[p].label}</span>
+              <span className="text-xs text-gray-400">({PROVIDER_DEFAULTS[p].hint})</span>
+            </label>
+          ))}
+        </div>
       </div>
 
+      {/* Valeur clé */}
       <div>
-        <label className="label">Label (ex: Clé principale Free)</label>
-        <input
-          type="text"
-          value={label}
-          onChange={e => setLabel(e.target.value)}
-          className="input"
-          placeholder="Mon nom pour cette clé"
-          required
-        />
-      </div>
-
-      <div>
-        <label className="label">Valeur de la clé API</label>
+        <label className="label">Clé API</label>
         <input
           type="password"
           value={apiKey}
           onChange={e => setApiKey(e.target.value)}
           className="input font-mono"
-          placeholder="Collez ici votre clé API"
+          placeholder={defaults.placeholder}
           required
           autoComplete="off"
         />
       </div>
 
-      <div>
-        <label className="label">Informations sur le plan (optionnel)</label>
-        <input
-          type="text"
-          value={planInfo}
-          onChange={e => setPlanInfo(e.target.value)}
-          className="input"
-          placeholder="ex: Free 500 req/mois"
-        />
+      {/* Quota */}
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <label className="label">Quota (nombre de req.)</label>
+          <input
+            type="number"
+            value={quotaLimit}
+            min={1}
+            onChange={e => setQuotaLimit(Number(e.target.value))}
+            className="input"
+          />
+        </div>
+        <div className="flex-1">
+          <label className="label">Période</label>
+          <select
+            value={quotaPeriod}
+            onChange={e => setQuotaPeriod(e.target.value as 'hourly' | 'daily' | 'monthly')}
+            className="input"
+          >
+            <option value="hourly">Par heure</option>
+            <option value="daily">Par jour</option>
+            <option value="monthly">Par mois</option>
+          </select>
+        </div>
       </div>
 
       {error && (

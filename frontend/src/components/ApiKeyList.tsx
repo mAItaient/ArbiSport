@@ -1,5 +1,5 @@
 /**
- * Liste des clés API avec statut colorisé et jauge de quota.
+ * Liste des clés API avec statut colorisé, jauge de quota et période.
  */
 import type { ApiKey } from '../types'
 import { deleteApiKey, toggleApiKey } from '../api/client'
@@ -7,6 +7,12 @@ import { deleteApiKey, toggleApiKey } from '../api/client'
 interface Props {
   keys: ApiKey[]
   onRefresh: () => void
+}
+
+const PERIOD_LABELS: Record<string, string> = {
+  hourly: 'req/h',
+  daily: 'req/j',
+  monthly: 'req/mois',
 }
 
 export default function ApiKeyList({ keys, onRefresh }: Props) {
@@ -21,22 +27,12 @@ export default function ApiKeyList({ keys, onRefresh }: Props) {
   }
 
   async function handleToggle(id: number) {
-    try {
-      await toggleApiKey(id)
-      onRefresh()
-    } catch (err) {
-      console.error(err)
-    }
+    try { await toggleApiKey(id); onRefresh() } catch (err) { console.error(err) }
   }
 
   async function handleDelete(id: number) {
     if (!confirm('Supprimer cette clé API ?')) return
-    try {
-      await deleteApiKey(id)
-      onRefresh()
-    } catch (err) {
-      console.error(err)
-    }
+    try { await deleteApiKey(id); onRefresh() } catch (err) { console.error(err) }
   }
 
   return (
@@ -62,7 +58,6 @@ function KeyCard({
     NEAR_LIMIT: 'badge-yellow',
     LIMITED: 'badge-red',
   }
-
   const statusLabels: Record<string, string> = {
     ACTIVE: 'Actif',
     NEAR_LIMIT: 'Presque épuisé',
@@ -70,17 +65,16 @@ function KeyCard({
   }
 
   const remaining = k.requests_remaining ?? null
-  const limit = k.requests_limit ?? null
+  const limit = k.requests_limit ?? k.quota_limit ?? null
   const pct = remaining != null && limit ? Math.round((remaining / limit) * 100) : null
-
   const providerLabel = k.provider === 'theOddsApi' ? 'The Odds API' : 'Odds-API.io'
+  const periodLabel = k.quota_period ? PERIOD_LABELS[k.quota_period] || k.quota_period : ''
 
   return (
     <div className={`card ${!k.enabled ? 'opacity-60' : ''}`}>
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <span className="font-semibold text-gray-900">{k.label}</span>
             <span className="badge badge-gray">{providerLabel}</span>
             <span className={`badge ${statusColors[k.status] || 'badge-gray'}`}>
               {statusLabels[k.status] || k.status}
@@ -88,11 +82,14 @@ function KeyCard({
             {!k.enabled && <span className="badge badge-gray">Désactivé</span>}
           </div>
           <p className="text-xs text-gray-400 font-mono">{k.api_key_value}</p>
-          {k.plan_info && <p className="text-xs text-gray-500 mt-1">{k.plan_info}</p>}
-          <p className="text-xs text-gray-400 mt-1">Requêtes utilisées : {k.requests_used_total}</p>
+          {k.quota_limit && (
+            <p className="text-xs text-gray-500 mt-1">
+              Quota : <strong>{k.quota_limit.toLocaleString()} {periodLabel}</strong>
+            </p>
+          )}
+          <p className="text-xs text-gray-400 mt-0.5">Requêtes utilisées : {k.requests_used_total}</p>
         </div>
 
-        {/* Actions */}
         <div className="flex items-center gap-2 ml-4">
           <button
             onClick={() => onToggle(k.id)}
@@ -113,7 +110,6 @@ function KeyCard({
         </div>
       </div>
 
-      {/* Jauge de quota */}
       {pct !== null && (
         <div className="mt-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">

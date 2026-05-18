@@ -4,14 +4,16 @@ export interface ApiKey {
   id: number
   provider: 'theOddsApi' | 'oddsApiIo'
   label: string
-  api_key_value: string  // masqué côté API
+  api_key_value: string
   plan_info?: string
   status: 'ACTIVE' | 'NEAR_LIMIT' | 'LIMITED'
   requests_remaining?: number
   requests_limit?: number
   last_reset_at?: string
   requests_used_total: number
-  enabled: number  // 0 | 1
+  quota_limit?: number
+  quota_period?: 'hourly' | 'daily' | 'monthly'
+  enabled: number
   created_at: string
   updated_at: string
 }
@@ -54,7 +56,7 @@ export interface TwoWayMarket {
   bookmaker: string
   market_key: string
   outcome_count?: number
-  is_two_way: number  // 0 | 1
+  is_two_way: number
   events_tested?: number
   two_outcome_rate?: number
   last_checked_at: string
@@ -120,7 +122,6 @@ export interface HealthStatus {
   dbOk: boolean
 }
 
-// Calcul local des mises (sans appel API)
 export interface StakeCalculation {
   stakeA: number
   stakeB: number

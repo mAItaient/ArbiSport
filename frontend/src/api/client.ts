@@ -1,6 +1,5 @@
 /**
  * Client HTTP pour l'API backend ArbiSport.
- * Utilise fetch natif avec gestion d'erreurs centralisée.
  */
 
 const API_BASE = '/api'
@@ -28,11 +27,9 @@ async function request<T>(
   return res.json() as Promise<T>
 }
 
-// ─── Health ────────────────────────────────────────────────────────────────────
 export const getHealth = () =>
   request<{ status: string; version: string; uptime: number; dbOk: boolean }>('/health')
 
-// ─── Config ────────────────────────────────────────────────────────────────────
 export const getConfig = () =>
   request<Record<string, unknown>>('/config')
 
@@ -42,7 +39,6 @@ export const updateConfig = (data: Record<string, unknown>) =>
     body: JSON.stringify(data),
   })
 
-// ─── Clés API ──────────────────────────────────────────────────────────────────
 export const getApiKeys = () =>
   request<import('../types').ApiKey[]>('/api-keys')
 
@@ -51,6 +47,8 @@ export const createApiKey = (data: {
   label: string
   api_key_value: string
   plan_info?: string
+  quota_limit?: number
+  quota_period?: 'hourly' | 'daily' | 'monthly'
 }) =>
   request<import('../types').ApiKey>('/api-keys', {
     method: 'POST',
@@ -69,14 +67,12 @@ export const deleteApiKey = (id: number) =>
 export const toggleApiKey = (id: number) =>
   request<import('../types').ApiKey>(`/api-keys/${id}/toggle`, { method: 'POST' })
 
-// ─── Scan ──────────────────────────────────────────────────────────────────────
 export const runScan = (params: import('../types').ScanParams) =>
   request<import('../types').ScanResult>('/scan', {
     method: 'POST',
     body: JSON.stringify(params),
   })
 
-// ─── Opportunités ──────────────────────────────────────────────────────────────
 export const getOpportunities = (params?: {
   limit?: number
   offset?: number
@@ -92,7 +88,6 @@ export const getOpportunities = (params?: {
   return request<import('../types').PaginatedOpportunities>(`/opportunities${query}`)
 }
 
-// ─── Analytics ─────────────────────────────────────────────────────────────────
 export const getHotspots = (params?: { days?: number; groupBy?: 'market' | 'pair'; minOccurrences?: number }) => {
   const qs = new URLSearchParams()
   if (params?.days) qs.set('days', String(params.days))
@@ -109,7 +104,6 @@ export const getAnalyticsStats = (days = 7) =>
     `/analytics/stats?days=${days}`
   )
 
-// ─── Marchés 2-way ─────────────────────────────────────────────────────────────
 export const getTwoWayMarkets = (params?: { provider?: string; sport?: string; twoWayOnly?: boolean }) => {
   const qs = new URLSearchParams()
   if (params?.provider) qs.set('provider', params.provider)

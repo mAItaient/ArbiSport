@@ -1,10 +1,10 @@
 /**
- * Module d'accès à la base de données SQLite.
- * Ouvre la connexion better-sqlite3 et exécute les migrations au démarrage.
+ * Initialisation SQLite avec better-sqlite3.
+ * Exécute toutes les migrations au démarrage.
  */
 import Database from 'better-sqlite3';
-import { readFileSync, readdirSync, mkdirSync, existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { readFileSync, readdirSync } from 'fs';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import config from '../config.js';
 import logger from '../utils/logger.js';
@@ -12,65 +12,59 @@ import logger from '../utils/logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let db;
+let db = null;
 
-/**
- * Initialise et retourne la connexion SQLite (singleton).
- * Crée le répertoire data/ si absent, puis exécute les migrations.
- * @returns {Database} instance better-sqlite3
- */
 export function getDb() {
-  if (db) return db;
-
-  // Crée le dossier de données si nécessaire
-  const dir = dirname(config.dbPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-    logger.info(`Répertoire de données créé : ${dir}`);
+  if (!db) {
+    db = new Database(config.dbPath);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
   }
-
-  db = new Database(config.dbPath);
-
-  // Active le mode WAL pour de meilleures performances concurrentes
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-
-  runMigrations(db);
-
-  logger.info(`Base de données SQLite ouverte : ${config.dbPath}`);
   return db;
 }
 
-/**
- * Exécute les fichiers de migration SQL par ordre alphabétique.
- * @param {Database} database - Instance SQLite
- */
 function runMigrations(database) {
+  // Crée la table de suivi des migrations si absente
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL UNIQUE,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   const migrationsDir = join(__dirname, 'migrations');
+  const files = readdirSync(migrationsDir)
+    .filter(f => f.endsWith('.sql'))
+    .sort();
 
-  try {
-    const files = readdirSync(migrationsDir)
-      .filter(f => f.endsWith('.sql'))
-      .sort();
+  for (const file of files) {
+    const already = database.prepare('SELECT 1 FROM migrations WHERE filename = ?').get(file);
+    if (already) continue;
 
-    for (const file of files) {
-      const sql = readFileSync(join(migrationsDir, file), 'utf-8');
-      database.exec(sql);
-      logger.info(`Migration exécutée : ${file}`);
+    const sql = readFileSync(join(migrationsDir, file), 'utf8');
+    try {
+      // Exécute chaque statement séparément pour éviter les erreurs sur ALTER TABLE
+      const statements = sql.split(';').map(s => s.trim()).filter(Boolean);
+      for (const stmt of statements) {
+        try {
+          database.exec(stmt + ';');
+        } catch (err) {
+          // ALTER TABLE échoue si la colonne existe déjà — on ignore silencieusement
+          if (err.message.includes('duplicate column name')) {
+            logger.debug(`Migration ${file}: colonne déjà existante, ignorée.`);
+          } else {
+            throw err;
+          }
+        }
+      }
+      database.prepare('INSERT INTO migrations (filename) VALUES (?)').run(file);
+      logger.info(`Migration appliquée : ${file}`);
+    } catch (err) {
+      logger.error(`Erreur migration ${file}: ${err.message}`);
+      throw err;
     }
-  } catch (err) {
-    logger.error(`Erreur lors des migrations : ${err.message}`);
-    throw err;
-  }
-}
-
-/**
- * Ferme la connexion à la base de données (utilisé dans les tests).
- */
-export function closeDb() {
-  if (db) {
-    db.close();
-    db = null;
   }
 }
 

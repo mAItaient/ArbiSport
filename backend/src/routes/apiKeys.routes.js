@@ -12,36 +12,47 @@ import ApiKey from '../models/ApiKey.js';
 
 const router = Router();
 
-// Schéma de validation pour la création d'une clé
+// Quotas par défaut selon le fournisseur
+const DEFAULT_QUOTAS = {
+  theOddsApi:  { quota_limit: 500,  quota_period: 'monthly' },
+  oddsApiIo:   { quota_limit: 100,  quota_period: 'hourly'  },
+};
+
 const createSchema = z.object({
   provider: z.enum(['theOddsApi', 'oddsApiIo']),
-  label: z.string().min(1, 'Le label est requis').max(100),
   api_key_value: z.string().min(1, 'La valeur de la clé est requise'),
-  plan_info: z.string().optional(),
+  quota_limit: z.number().int().positive().optional(),
+  quota_period: z.enum(['hourly', 'daily', 'monthly']).optional(),
 });
 
-// Schéma de validation pour la mise à jour
 const updateSchema = z.object({
   label: z.string().min(1).max(100).optional(),
   plan_info: z.string().optional(),
   enabled: z.number().int().min(0).max(1).optional(),
+  quota_limit: z.number().int().positive().optional(),
+  quota_period: z.enum(['hourly', 'daily', 'monthly']).optional(),
 });
 
-// GET /api/api-keys — liste toutes les clés (masque la valeur pour la sécurité)
 router.get('/', (req, res) => {
   const keys = ApiKey.findAll().map(maskKey);
   res.json(keys);
 });
 
-// POST /api/api-keys — crée une nouvelle clé
 router.post('/', (req, res) => {
   const result = createSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({ error: result.error.errors[0].message });
   }
 
+  // Fusionne les quotas par défaut avec ce que l'utilisateur a renseigné
+  const defaults = DEFAULT_QUOTAS[result.data.provider] || {};
+  const data = {
+    ...defaults,
+    ...result.data,
+  };
+
   try {
-    const key = ApiKey.create(result.data);
+    const key = ApiKey.create(data);
     res.status(201).json(maskKey(key));
   } catch (err) {
     if (err.message.includes('UNIQUE')) {
@@ -51,7 +62,6 @@ router.post('/', (req, res) => {
   }
 });
 
-// PUT /api/api-keys/:id — mise à jour d'une clé
 router.put('/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
@@ -68,7 +78,6 @@ router.put('/:id', (req, res) => {
   res.json(maskKey(updated));
 });
 
-// DELETE /api/api-keys/:id — supprime une clé
 router.delete('/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
@@ -79,7 +88,6 @@ router.delete('/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/api-keys/:id/toggle — active ou désactive une clé
 router.post('/:id/toggle', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
@@ -90,23 +98,13 @@ router.post('/:id/toggle', (req, res) => {
   res.json(maskKey(key));
 });
 
-/**
- * Masque les 8 derniers caractères de la clé API pour la sécurité.
- * Affiche uniquement les 4 premiers et 4 derniers caractères.
- * @param {Object} key - Clé API depuis la DB
- * @returns {Object} Clé avec valeur masquée
- */
 function maskKey(key) {
   if (!key) return key;
   const val = key.api_key_value || '';
   const masked = val.length > 8
     ? `${val.slice(0, 4)}${'*'.repeat(val.length - 8)}${val.slice(-4)}`
     : '****';
-
-  return {
-    ...key,
-    api_key_value: masked,
-  };
+  return { ...key, api_key_value: masked };
 }
 
 export default router;
