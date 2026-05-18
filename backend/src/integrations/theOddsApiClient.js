@@ -16,6 +16,29 @@ const DEFAULT_BOOKMAKERS = [
   'betsson', 'nordicbet', 'marathonbet', 'coolbet',
 ];
 
+// Marchés supportés par l'endpoint principal /v4/sports/{sport}/odds.
+// Les autres marchés (draw_no_bet, btts, team_totals, alternate_*…) ne sont
+// disponibles que via l'endpoint per-event /v4/sports/{sport}/events/{id}/odds.
+const CORE_MARKETS = new Set(['h2h', 'spreads', 'totals', 'outrights', 'h2h_lay', 'outrights_lay']);
+
+/**
+ * Sépare les marchés en deux catégories selon l'endpoint cible.
+ * @param {string|string[]} markets
+ * @returns {{core: string[], perEvent: string[]}}
+ */
+function splitMarkets(markets) {
+  const list = Array.isArray(markets)
+    ? markets
+    : String(markets || '').split(',').map((m) => m.trim()).filter(Boolean);
+  const core = [];
+  const perEvent = [];
+  for (const m of list) {
+    if (CORE_MARKETS.has(m)) core.push(m);
+    else perEvent.push(m);
+  }
+  return { core, perEvent };
+}
+
 async function request(endpoint, params = {}) {
   const key = apiKeyManager.getKeyForRequest(PROVIDER);
   if (!key) {
@@ -66,54 +89,125 @@ export async function getOdds({
   oddsFormat = 'decimal',
   eventIds,
 } = {}) {
-  // The Odds API v4: on ne peut pas mixer regions ET bookmakers
-  // Si bookmakers est spécifié, on utilise le param bookmakers (sans regions)
-  // Sinon on passe regions=eu
-  const params = {
-    markets,
-    oddsFormat,
-  };
+  // The Odds API v4 — limitations à gérer :
+  //  - on ne peut pas mixer regions ET bookmakers ;
+  //  - l'endpoint /sports/{sport}/odds n'accepte que les marchés "core"
+  //    (h2h, spreads, totals, outrights). Les autres (draw_no_bet, btts,
+  //    team_totals, alternate_*) doivent passer par /events/{id}/odds.
+  const { core, perEvent } = splitMarkets(markets);
 
-  if (bookmakers && bookmakers.length > 0) {
-    // Mode bookmakers explicites: pas de param regions
-    params.bookmakers = Array.isArray(bookmakers) ? bookmakers.join(',') : bookmakers;
+  // Si aucun marché "core" demandé, on passe directement aux marchés per-event.
+  // Sinon, on fait d'abord le scan groupé pour récupérer events + cotes core.
+  let events = [];
+  const quotes = [];
+  const eventIdsCollected = new Set();
+
+  if (core.length > 0) {
+    const params = {
+      markets: core.join(','),
+      oddsFormat,
+    };
+
+    if (bookmakers && bookmakers.length > 0) {
+      params.bookmakers = Array.isArray(bookmakers) ? bookmakers.join(',') : bookmakers;
+    } else {
+      params.regions = regions;
+    }
+
+    if (commenceTimeFrom) params.commenceTimeFrom = commenceTimeFrom;
+    if (commenceTimeTo) params.commenceTimeTo = commenceTimeTo;
+    if (eventIds) params.eventIds = Array.isArray(eventIds) ? eventIds.join(',') : eventIds;
+
+    const { data } = await request(`/sports/${sport}/odds`, params);
+
+    for (const item of data) {
+      const event = normalizeEvent(item);
+      events.push(event);
+      eventIdsCollected.add(item.id);
+      pushQuotes(item, quotes);
+    }
+  } else if (eventIds) {
+    // Pas de marché core : on doit récupérer la liste d'events séparément.
+    const idList = Array.isArray(eventIds) ? eventIds : String(eventIds).split(',');
+    for (const id of idList) eventIdsCollected.add(id);
   } else {
-    // Mode regions: liste les bookmakers européens disponibles
-    params.regions = regions;
+    // Aucun event id fourni : on liste les events du sport pour boucler.
+    try {
+      const list = await listEvents(sport);
+      events = list;
+      for (const e of list) eventIdsCollected.add(e.id);
+    } catch (err) {
+      logger.warn(`Impossible de lister les events ${sport} pour marchés per-event : ${err.message}`);
+    }
   }
 
-  if (commenceTimeFrom) params.commenceTimeFrom = commenceTimeFrom;
-  if (commenceTimeTo) params.commenceTimeTo = commenceTimeTo;
-  if (eventIds) params.eventIds = Array.isArray(eventIds) ? eventIds.join(',') : eventIds;
-
-  const { data } = await request(`/sports/${sport}/odds`, params);
-
-  const events = [];
-  const quotes = [];
-
-  for (const item of data) {
-    const event = normalizeEvent(item);
-    events.push(event);
-
-    if (item.bookmakers) {
-      for (const bm of item.bookmakers) {
-        for (const market of (bm.markets || [])) {
-          for (const outcome of (market.outcomes || [])) {
-            quotes.push({
-              event_id: item.id,
-              bookmaker: bm.key,
-              market_key: market.key,
-              outcome_label: outcome.name,
-              odds: outcome.price,
-              point: outcome.point ?? null,
-            });
-          }
-        }
+  // Marchés non supportés par l'endpoint principal : on les récupère event par event.
+  if (perEvent.length > 0 && eventIdsCollected.size > 0) {
+    logger.debug(`Récupération marchés per-event ${perEvent.join(',')} pour ${eventIdsCollected.size} events ${sport}`);
+    for (const eventId of eventIdsCollected) {
+      try {
+        const data = await getEventOdds({
+          sport,
+          eventId,
+          markets: perEvent,
+          bookmakers,
+          regions,
+          oddsFormat,
+        });
+        pushQuotes(data, quotes);
+      } catch (err) {
+        // Un event peut ne pas avoir certains marchés : on ignore silencieusement.
+        logger.debug(`Marchés per-event ${eventId} indisponibles : ${err.message}`);
       }
     }
   }
 
   return { events, quotes };
+}
+
+/**
+ * Endpoint per-event pour les marchés alternatifs (draw_no_bet, btts, etc.).
+ */
+export async function getEventOdds({
+  sport,
+  eventId,
+  markets,
+  bookmakers,
+  regions = 'eu',
+  oddsFormat = 'decimal',
+}) {
+  const params = {
+    markets: Array.isArray(markets) ? markets.join(',') : markets,
+    oddsFormat,
+  };
+  if (bookmakers && bookmakers.length > 0) {
+    params.bookmakers = Array.isArray(bookmakers) ? bookmakers.join(',') : bookmakers;
+  } else {
+    params.regions = regions;
+  }
+  const { data } = await request(`/sports/${sport}/events/${eventId}/odds`, params);
+  return data;
+}
+
+/**
+ * Aplatit les cotes d'un objet event renvoyé par The Odds API dans le tableau quotes.
+ */
+function pushQuotes(item, quotes) {
+  if (!item || !item.bookmakers) return;
+  for (const bm of item.bookmakers) {
+    for (const market of (bm.markets || [])) {
+      for (const outcome of (market.outcomes || [])) {
+        quotes.push({
+          event_id: item.id,
+          bookmaker: bm.key,
+          market_key: market.key,
+          outcome_label: outcome.name,
+          odds: outcome.price,
+          point: outcome.point ?? null,
+        });
+      }
+    }
+  }
 }
 
 function normalizeEvent(raw) {

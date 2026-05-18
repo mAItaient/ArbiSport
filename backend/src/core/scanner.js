@@ -75,6 +75,11 @@ export async function runFullScan(params) {
             logger.warn(`Pas de clé disponible pour ${provider}, abandon du scan`);
             break;
           }
+          // 404 = sport inactif ou inconnu chez ce provider → warn discret
+          if (err.response?.status === 404 || /status code 404/.test(err.message)) {
+            logger.warn(`Sport ${sport} inactif ou inconnu chez ${provider}, ignoré`);
+            continue;
+          }
           logger.error(`Erreur scan ${provider}/${sport}: ${err.message}`);
         }
       }
