@@ -171,4 +171,65 @@ describe('findOpportunities', () => {
     const opps = findOpportunities(quotes, events, 100, {});
     expect(opps.length).toBe(0);
   });
+
+  // Régression critique : un marché h2h à 3 issues (1X2 du football) ne doit
+  // JAMAIS produire d'opportunité 2-way — sinon le nul fait perdre la mise.
+  it('REJETTE intégralement un marché h2h à 3 issues (1X2 football)', () => {
+    const quotes = [
+      // Bournemouth vs Manchester City — cas observé en prod
+      { event_id: 'e1', bookmaker: 'betclic_fr',  market_key: 'h2h', outcome_label: 'Bournemouth',     odds: 4.45, point: null },
+      { event_id: 'e1', bookmaker: 'betclic_fr',  market_key: 'h2h', outcome_label: 'Draw',            odds: 4.10, point: null },
+      { event_id: 'e1', bookmaker: 'betclic_fr',  market_key: 'h2h', outcome_label: 'Manchester City', odds: 1.80, point: null },
+      { event_id: 'e1', bookmaker: 'winamax_fr',  market_key: 'h2h', outcome_label: 'Bournemouth',     odds: 4.20, point: null },
+      { event_id: 'e1', bookmaker: 'winamax_fr',  market_key: 'h2h', outcome_label: 'Draw',            odds: 4.00, point: null },
+      { event_id: 'e1', bookmaker: 'winamax_fr',  market_key: 'h2h', outcome_label: 'Manchester City', odds: 1.64, point: null },
+    ];
+    const events = [{
+      id: 'e1', sport: 'soccer_epl', league: 'EPL',
+      label: 'Bournemouth vs Manchester City', commence_time: null,
+    }];
+
+    const opps = findOpportunities(quotes, events, 100, {}, 'theOddsApi');
+    // Aucune opportunité : le marché a 3 issues, on ne peut pas l'arbitrer en 2-way.
+    expect(opps.length).toBe(0);
+  });
+
+  // Cas légitime : draw_no_bet est nativement 2-way (nul remboursé), on accepte.
+  it('accepte un marché draw_no_bet à 2 issues', () => {
+    const quotes = [
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'draw_no_bet', outcome_label: 'Home', odds: 2.10, point: null },
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'draw_no_bet', outcome_label: 'Away', odds: 1.90, point: null },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'draw_no_bet', outcome_label: 'Home', odds: 1.90, point: null },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'draw_no_bet', outcome_label: 'Away', odds: 2.10, point: null },
+    ];
+    const events = [{ id: 'e1', sport: 'soccer_epl', league: 'EPL', label: 'Test' }];
+    const opps = findOpportunities(quotes, events, 100, {}, 'theOddsApi');
+    expect(opps.length).toBeGreaterThan(0);
+  });
+
+  // Cas légitime : tennis h2h n'a que 2 issues (pas de nul), on accepte.
+  it('accepte un marché h2h à 2 issues (tennis, MMA, NBA…)', () => {
+    const quotes = [
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'h2h', outcome_label: 'Djokovic', odds: 2.10, point: null },
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'h2h', outcome_label: 'Nadal',    odds: 1.90, point: null },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'h2h', outcome_label: 'Djokovic', odds: 1.90, point: null },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'h2h', outcome_label: 'Nadal',    odds: 2.10, point: null },
+    ];
+    const events = [{ id: 'e1', sport: 'tennis_atp', league: 'ATP', label: 'Test' }];
+    const opps = findOpportunities(quotes, events, 100, {}, 'theOddsApi');
+    expect(opps.length).toBeGreaterThan(0);
+  });
+
+  // Cas légitime : totals (over/under) est toujours 2-way.
+  it('accepte un marché totals (over/under) sur la même ligne', () => {
+    const quotes = [
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'totals', outcome_label: 'Over',  odds: 2.10, point: 2.5 },
+      { event_id: 'e1', bookmaker: 'bookA', market_key: 'totals', outcome_label: 'Under', odds: 1.90, point: 2.5 },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'totals', outcome_label: 'Over',  odds: 1.90, point: 2.5 },
+      { event_id: 'e1', bookmaker: 'bookB', market_key: 'totals', outcome_label: 'Under', odds: 2.10, point: 2.5 },
+    ];
+    const events = [{ id: 'e1', sport: 'soccer_epl', league: 'EPL', label: 'Test' }];
+    const opps = findOpportunities(quotes, events, 100, {}, 'theOddsApi');
+    expect(opps.length).toBeGreaterThan(0);
+  });
 });

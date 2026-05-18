@@ -128,36 +128,44 @@ function groupQuotesByEventMarket(quotes) {
 }
 
 /**
- * Identifie les deux issues opposées dans un marché 2-way.
- * Pour h2h : home / away
- * Pour totals : over / under (même ligne)
- * Pour spreads : home / away (même handicap)
+ * Identifie les deux issues opposées dans un marché STRICTEMENT 2-way.
+ *
+ * Règle critique : on n'autorise QUE les marchés qui ont nativement 2 issues.
+ *
+ *   - h2h : 2 issues UNIQUEMENT si le sport n'a pas de nul (tennis, basket NBA,
+ *     MMA, NFL, baseball, hockey à cause des prolongations…). Pour le football,
+ *     h2h = 1X2 à 3 issues → REJETÉ (on ne peut pas l'ignorer, sinon le nul fait
+ *     perdre toute la mise).
+ *   - draw_no_bet : 2 issues, le nul rembourse → OK.
+ *   - totals / spreads : 2 issues (over/under, home/away à handicap) → OK.
+ *   - btts : 2 issues (oui/non) → OK.
+ *
+ * Si le marché a strictement plus de 2 issues, on le REJETTE intégralement.
+ *
  * @param {Object} group - Groupe de quotes d'un marché
  * @returns {Array<string>|null} [labelA, labelB] ou null si non 2-way
  */
 function getTwoWayOutcomes(group) {
+  // Clé d'unicité : on regarde les labels distincts vus, tous bookmakers confondus.
+  // Si AU MOINS UN bookmaker propose 3 issues (ex: home/draw/away), on considère
+  // le marché comme 3-way et on le rejette entièrement — sinon le nul casse
+  // l'arbitrage et le calcul donne un faux gain garanti.
   const outcomeLabels = Object.keys(group.outcomes);
 
-  // Filtre les marchés non 2-way (ex: 3-way avec match nul)
-  if (outcomeLabels.length < 2) return null;
-
-  // Pour les marchés h2h : détecter et exclure les matchs nuls
-  const drawLabels = ['draw', 'tie', 'nul', 'match nul'];
-  const withoutDraw = outcomeLabels.filter(
-    l => !drawLabels.includes(l.toLowerCase())
-  );
-
-  // Uniquement 2 issues restantes (ex: victoire home + victoire away)
-  if (withoutDraw.length === 2) {
-    return withoutDraw;
+  if (outcomeLabels.length !== 2) {
+    // 1 issue : marché incomplet. 3+ issues : marché à plus de 2 issues (1X2,
+    // double chance, etc.) — incompatible avec l'arbitrage 2-way.
+    return null;
   }
 
-  // Cas exact 2-way (totals/spreads)
-  if (outcomeLabels.length === 2) {
-    return outcomeLabels;
+  // Vérification supplémentaire : aucun des deux labels ne doit être un "nul".
+  // (cas pathologique où un bookmaker n'aurait que home+draw par exemple)
+  const drawLabels = new Set(['draw', 'tie', 'nul', 'match nul', 'x']);
+  if (outcomeLabels.some((l) => drawLabels.has(String(l).toLowerCase()))) {
+    return null;
   }
 
-  return null;
+  return outcomeLabels;
 }
 
 /**

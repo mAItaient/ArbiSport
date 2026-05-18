@@ -58,7 +58,9 @@ const SPORTS_LIST = [
 ]
 
 const MARKET_KEYS = [
-  { key: 'h2h',          label: 'Victoire/Défaite (H2H)' },
+  // H2H = 2-way uniquement pour sports SANS nul (tennis, MMA, NBA, NFL…).
+  // Pour le football, le 1X2 a 3 issues et est automatiquement rejeté.
+  { key: 'h2h',          label: 'Victoire/Défaite (H2H) – sports sans nul' },
   { key: 'totals',       label: 'Total buts/points' },
   { key: 'spreads',      label: 'Handicap (Spreads)' },
   { key: 'draw_no_bet',  label: 'Victoire sans nul' },
