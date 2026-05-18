@@ -122,6 +122,32 @@ export interface HealthStatus {
   dbOk: boolean
 }
 
+export interface PendingMatch {
+  id: number
+  event_a_id: string
+  event_a_provider: string
+  event_a_home?: string
+  event_a_away?: string
+  event_a_commence?: string
+  event_b_id: string
+  event_b_provider: string
+  event_b_home?: string
+  event_b_away?: string
+  event_b_commence?: string
+  score: number
+  status: 'pending' | 'confirmed' | 'rejected'
+  created_at: string
+  resolved_at?: string
+}
+
+export interface ConfirmedAlias {
+  id: number
+  team_canonical: string
+  team_alias: string
+  source_provider?: string
+  created_at: string
+}
+
 export interface StakeCalculation {
   stakeA: number
   stakeB: number

@@ -8,16 +8,31 @@ import ScanSettingsPage from './pages/ScanSettingsPage'
 import ApiKeysPage from './pages/ApiKeysPage'
 import MarketsPage from './pages/MarketsPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import DoutesPage from './pages/DoutesPage'
+import { useEffect, useState } from 'react'
+import { getPendingCount } from './api/client'
 
 const NAV_LINKS = [
   { to: '/', label: '📊 Tableau de bord', end: true },
   { to: '/scan', label: '🔍 Paramètres scan' },
   { to: '/keys', label: '🔑 Clés API' },
   { to: '/markets', label: '📋 Marchés 2-way' },
+  { to: '/doutes', label: '🤔 Doutes' },
   { to: '/analytics', label: '📈 Analytics' },
 ]
 
 export default function App() {
+  const [pendingCount, setPendingCount] = useState(0)
+
+  useEffect(() => {
+    let alive = true
+    const fetchCount = () =>
+      getPendingCount().then((r) => { if (alive) setPendingCount(r.pending) }).catch(() => {})
+    fetchCount()
+    const t = setInterval(fetchCount, 30000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+
   return (
     <BrowserRouter>
       <div className="min-h-screen flex flex-col">
@@ -48,6 +63,11 @@ export default function App() {
                     }
                   >
                     {link.label}
+                    {link.to === '/doutes' && pendingCount > 0 && (
+                      <span className="ml-1 px-1.5 py-0.5 bg-orange-500 text-white text-[10px] rounded-full">
+                        {pendingCount}
+                      </span>
+                    )}
                   </NavLink>
                 ))}
               </div>
@@ -63,6 +83,7 @@ export default function App() {
             <Route path="/keys" element={<ApiKeysPage />} />
             <Route path="/markets" element={<MarketsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/doutes" element={<DoutesPage />} />
           </Routes>
         </main>
 

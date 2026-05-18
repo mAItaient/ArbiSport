@@ -118,3 +118,23 @@ export const initTwoWayMarkets = (data: { providers: string[]; sports: string[] 
     method: 'POST',
     body: JSON.stringify(data),
   })
+
+export const getPendingMatches = (status: 'pending' | 'confirmed' | 'rejected' = 'pending') =>
+  request<{ items: import('../types').PendingMatch[]; count: number }>(
+    `/pending-matches?status=${status}`
+  )
+
+export const getPendingCount = () =>
+  request<{ pending: number }>('/pending-matches/count')
+
+export const confirmPendingMatch = (id: number) =>
+  request<import('../types').PendingMatch>(`/pending-matches/${id}/confirm`, { method: 'POST' })
+
+export const rejectPendingMatch = (id: number) =>
+  request<import('../types').PendingMatch>(`/pending-matches/${id}/reject`, { method: 'POST' })
+
+export const getAliases = () =>
+  request<import('../types').ConfirmedAlias[]>('/aliases')
+
+export const deleteAlias = (id: number) =>
+  request<{ ok: boolean }>(`/aliases/${id}`, { method: 'DELETE' })

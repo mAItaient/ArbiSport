@@ -4,17 +4,17 @@
  */
 import axios from 'axios';
 import { apiKeyManager } from '../core/apiKeyManager.js';
+import { TARGET_BOOKMAKERS } from '../core/sportRegistry.js';
 import logger from '../utils/logger.js';
 
 const BASE_URL = 'https://api.the-odds-api.com/v4';
 const PROVIDER = 'theOddsApi';
 
-// Bookmakers européens/français disponibles sur The Odds API
-const DEFAULT_BOOKMAKERS = [
-  'betclic', 'unibet_fr', 'pmu', 'winamax', 'pinnacle',
-  'betfair', 'betfair_ex_eu', 'sport888', 'onexbet',
-  'betsson', 'nordicbet', 'marathonbet', 'coolbet',
-];
+// Bookmakers cibles couverts par The Odds API (10/13 — voir sportRegistry).
+// Limite stricte : on n'interroge JAMAIS d'autres bookmakers que ceux validés.
+const DEFAULT_BOOKMAKERS = TARGET_BOOKMAKERS
+  .map((b) => b.theOddsApi)
+  .filter(Boolean);
 
 // Marchés supportés par l'endpoint principal /v4/sports/{sport}/odds.
 // Les autres marchés (draw_no_bet, btts, team_totals, alternate_*…) ne sont
@@ -111,7 +111,8 @@ export async function getOdds({
     if (bookmakers && bookmakers.length > 0) {
       params.bookmakers = Array.isArray(bookmakers) ? bookmakers.join(',') : bookmakers;
     } else {
-      params.regions = regions;
+      // Par défaut on cible nos 10 bookmakers cibles plutôt qu'une région entière.
+      params.bookmakers = DEFAULT_BOOKMAKERS.join(',');
     }
 
     if (commenceTimeFrom) params.commenceTimeFrom = commenceTimeFrom;
@@ -183,7 +184,7 @@ export async function getEventOdds({
   if (bookmakers && bookmakers.length > 0) {
     params.bookmakers = Array.isArray(bookmakers) ? bookmakers.join(',') : bookmakers;
   } else {
-    params.regions = regions;
+    params.bookmakers = DEFAULT_BOOKMAKERS.join(',');
   }
   const { data } = await request(`/sports/${sport}/events/${eventId}/odds`, params);
   return data;
@@ -224,4 +225,5 @@ function normalizeEvent(raw) {
   };
 }
 
-export default { listSports, listEvents, getOdds };
+export default { listSports, listEvents, getOdds, getEventOdds, DEFAULT_BOOKMAKERS };
+export { DEFAULT_BOOKMAKERS };

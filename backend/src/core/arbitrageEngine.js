@@ -91,23 +91,56 @@ function normalizeToDecimal(odds, format = 'decimal') {
 }
 
 /**
- * Regroupe les quotes par (event_id, market_key, point) pour les marchés 2-way.
- * @param {Array<Object>} quotes - Liste de BookmakerQuote
- * @returns {Map} Clé: "eventId|marketKey|point" → {outcomes: {[label]: [{bookmaker, odds}]}}
+ * Regroupe les quotes par (event_id, market_key, ligne) pour les marchés 2-way.
+ *
+ * Règles strictes selon le marché (tolérance ZÉRO sur la ligne) :
+ *
+ *   - h2h / draw_no_bet / btts : pas de notion de point → groupKey = (event, market).
+ *
+ *   - totals (Over/Under)      : over et under SUR LE MÊME point sont opposés.
+ *     groupKey = (event, market, exactPoint). Cela garantit que Over 2.5 chez A
+ *     ne peut être combiné qu'avec Under 2.5 chez B (jamais Under 3.0).
+ *
+ *   - spreads (Handicap)       : home -1.5 et away +1.5 sont opposés. Le point
+ *     côté away est l'opposé du point home. On regroupe donc par |point| (valeur
+ *     absolue) et on note la direction signée dans le label outcome pour ne pas
+ *     comparer home -1.5 et home -1.0.
+ *
+ * @param {Array<Object>} quotes
+ * @returns {Map}
  */
 function groupQuotesByEventMarket(quotes) {
   const groups = new Map();
 
   for (const q of quotes) {
-    // Pour les totals et spreads, on distingue par la valeur de line
-    const point = q.point != null ? String(q.point) : '';
-    const groupKey = `${q.event_id}|${q.market_key}|${point}`;
+    const isSpread = q.market_key === 'spreads';
+    const isTotal  = q.market_key === 'totals';
+
+    let lineKey;
+    let label = q.outcome_label;
+
+    if (isSpread) {
+      // On groupe par valeur absolue : home -1.5 ↔ away +1.5 partagent |1.5|.
+      // Si le point manque on saute (un spread sans ligne est invalide).
+      if (q.point == null) continue;
+      lineKey = `abs:${Math.abs(Number(q.point)).toFixed(2)}`;
+    } else if (isTotal) {
+      // Over et Under partagent EXACTEMENT le même point.
+      if (q.point == null) continue;
+      lineKey = `pt:${Number(q.point).toFixed(2)}`;
+    } else {
+      lineKey = 'nopoint';
+    }
+
+    const groupKey = `${q.event_id}|${q.market_key}|${lineKey}`;
 
     if (!groups.has(groupKey)) {
       groups.set(groupKey, {
         event_id: q.event_id,
         market_key: q.market_key,
-        point: q.point,
+        // Pour affichage utilisateur : on garde une valeur représentative du point
+        // (signed pour spreads = abs ; pour totals = la ligne)
+        point: isSpread ? Math.abs(Number(q.point)) : (isTotal ? Number(q.point) : null),
         outcomes: {},
         bookmaker_quotes: [],
       });
@@ -116,12 +149,10 @@ function groupQuotesByEventMarket(quotes) {
     const group = groups.get(groupKey);
     group.bookmaker_quotes.push(q);
 
-    // Indexe les outcomes
-    const label = q.outcome_label;
     if (!group.outcomes[label]) {
       group.outcomes[label] = [];
     }
-    group.outcomes[label].push({ bookmaker: q.bookmaker, odds: q.odds });
+    group.outcomes[label].push({ bookmaker: q.bookmaker, odds: q.odds, point: q.point });
   }
 
   return groups;
@@ -226,10 +257,29 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
     const event = eventIndex[group.event_id];
     const commenceTime = event?.commence_time;
 
-    // Teste toutes les paires (bookmakerI sur A, bookmakerJ sur B), i ≠ j
+    // Teste toutes les paires (bookmakerI sur A, bookmakerJ sur B), i ≠ j.
+    // Pour les spreads, on impose qA.point === -qB.point (signes opposés et même magnitude).
+    const isSpread = group.market_key === 'spreads';
+    const isTotal  = group.market_key === 'totals';
     for (const qA of quotesA) {
       for (const qB of quotesB) {
         if (qA.bookmaker === qB.bookmaker) continue;
+
+        if (isSpread) {
+          // Les deux quotes doivent être sur des côtés opposés et même |point|.
+          const pA = Number(qA.point);
+          const pB = Number(qB.point);
+          if (!isFinite(pA) || !isFinite(pB)) continue;
+          if (Math.abs(pA + pB) > 1e-9) continue;       // somme nulle exigée
+          if (Math.abs(Math.abs(pA) - Math.abs(pB)) > 1e-9) continue;
+          if (Math.sign(pA) === Math.sign(pB) && pA !== 0) continue; // sinon même côté
+        } else if (isTotal) {
+          // Over et Under doivent partager exactement le même point.
+          const pA = Number(qA.point);
+          const pB = Number(qB.point);
+          if (!isFinite(pA) || !isFinite(pB)) continue;
+          if (Math.abs(pA - pB) > 1e-9) continue;
+        }
 
         const oA = normalizeToDecimal(qA.odds);
         const oB = normalizeToDecimal(qB.odds);
@@ -245,7 +295,11 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
         const urlA = getBookmakerUrl(provider, qA.bookmaker, event, labelA);
         const urlB = getBookmakerUrl(provider, qB.bookmaker, event, labelB);
 
-        const marketLabel = getMarketLabel(group.market_key, group.point);
+        // Affichage de la ligne signée pour transparence utilisateur
+        const lineDisplay = isSpread
+          ? signedLine(qA.point, qB.point)
+          : (isTotal ? Number(qA.point) : group.point);
+        const marketLabel = getMarketLabel(group.market_key, lineDisplay);
 
         opportunities.push({
           provider: provider || '',
@@ -255,6 +309,7 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
           event_label: event?.label || group.event_id,
           market_key: group.market_key,
           market_label: marketLabel,
+          line: lineDisplay,
           outcome_a_label: labelA,
           outcome_b_label: labelB,
           bookmaker_a: qA.bookmaker,
@@ -289,12 +344,29 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
 function getMarketLabel(marketKey, point) {
   const labels = {
     h2h: 'Victoire/Défaite',
-    totals: point != null ? `Total (${point})` : 'Total buts',
-    spreads: point != null ? `Handicap (${point})` : 'Handicap',
+    totals: point != null ? `Total ${point}` : 'Total',
+    spreads: point != null ? `Handicap ${formatSigned(point)}` : 'Handicap',
     draw_no_bet: 'Victoire sans nul',
     btts: 'Les deux équipes marquent',
   };
   return labels[marketKey] || marketKey;
+}
+
+/**
+ * Choisit l'écriture signée la plus pertinente pour la ligne (côté A vs B).
+ * On affiche la valeur côté home si déductible, sinon |point|.
+ */
+function signedLine(pA, pB) {
+  const a = Number(pA);
+  const b = Number(pB);
+  if (isFinite(a) && a !== 0) return Math.abs(a);
+  if (isFinite(b) && b !== 0) return Math.abs(b);
+  return null;
+}
+
+function formatSigned(n) {
+  if (n == null) return '';
+  return n > 0 ? `+${n}` : `${n}`;
 }
 
 export default { isArb, computeStakes, findOpportunities };

@@ -19,6 +19,8 @@ import scanRouter from './routes/scan.routes.js';
 import opportunitiesRouter from './routes/opportunities.routes.js';
 import analyticsRouter from './routes/analytics.routes.js';
 import marketsRouter from './routes/markets.routes.js';
+import pendingMatchesRouter from './routes/pendingMatches.routes.js';
+import aliasesRouter from './routes/aliases.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -46,6 +48,8 @@ app.use('/api/scan', scanRouter);
 app.use('/api/opportunities', opportunitiesRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/markets', marketsRouter);
+app.use('/api/pending-matches', pendingMatchesRouter);
+app.use('/api/aliases', aliasesRouter);
 
 // ─── Serveur frontend (mode production) ───────────────────────────────────────
 const frontendDist = join(__dirname, '../../frontend/dist');

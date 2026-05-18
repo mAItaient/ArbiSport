@@ -10,22 +10,24 @@ const PROVIDERS = [
 ] as const
 type ProviderKey = typeof PROVIDERS[number]['key']
 
-// Bookmakers disponibles (clés The Odds API)
+// 13 bookmakers cibles uniquement. Le badge indique les providers qui les couvrent :
+//  - T = The Odds API
+//  - O = Odds-API.io
+// (id interne = utilisé en interne par filterBookmakersForProvider côté backend)
 const BOOKMAKERS_LIST = [
-  { key: 'betclic',       label: 'Betclic' },
-  { key: 'unibet_fr',     label: 'Unibet' },
-  { key: 'pmu',           label: 'PMU' },
-  { key: 'winamax',       label: 'Winamax' },
-  { key: 'pinnacle',      label: 'Pinnacle' },
-  { key: 'betfair_ex_eu', label: 'Betfair' },
-  { key: 'sport888',      label: '888sport' },
-  { key: 'onexbet',       label: '1xBet' },
-  { key: 'betonlineag',   label: 'Betonline' },
-  { key: 'everygame',     label: 'Everygame' },
-  { key: 'mybookieag',    label: 'MyBookie' },
-  { key: 'betsson',       label: 'Betsson' },
-  { key: 'nordicbet',     label: 'Nordicbet' },
-  { key: 'marathonbet',   label: 'Marathonbet' },
+  { key: 'betclic',   label: 'Betclic',   providers: 'T+O' },
+  { key: 'netbet',    label: 'NetBet',    providers: 'O' },
+  { key: 'unibet',    label: 'Unibet',    providers: 'T+O' },
+  { key: 'pmu',       label: 'PMU',       providers: 'T+O' },
+  { key: 'winamax',   label: 'Winamax',   providers: 'T+O' },
+  { key: 'pinnacle',  label: 'Pinnacle',  providers: 'T+O' },
+  { key: 'betfair',   label: 'Betfair',   providers: 'T+O' },
+  { key: '888sport',  label: '888sport',  providers: 'T+O' },
+  { key: 'onexbet',   label: '1xBet',     providers: 'T+O' },
+  { key: 'betonline', label: 'Betonline', providers: 'T+O' },
+  { key: 'everygame', label: 'Everygame', providers: 'T+O' },
+  { key: 'bcgame',    label: 'BC.Game',   providers: 'O' },
+  { key: 'stake',     label: 'Stake',     providers: 'O' },
 ]
 
 const SPORTS_LIST = [
@@ -255,7 +257,7 @@ export default function ScanControls({ onScan, loading = false }: Props) {
             <span className="text-xs text-gray-400 ml-2">(tous par défaut)</span>
           )}
         </label>
-        <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto border rounded-lg p-2">
+        <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto border rounded-lg p-2">
           {BOOKMAKERS_LIST.map(b => (
             <label key={b.key} className="flex items-center gap-2 cursor-pointer text-sm">
               <input
@@ -264,10 +266,18 @@ export default function ScanControls({ onScan, loading = false }: Props) {
                 onChange={() => toggleItem(selectedBookmakers, setSelectedBookmakers, b.key)}
                 className="rounded accent-green-600"
               />
-              {b.label}
+              <span>{b.label}</span>
+              <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                b.providers === 'T+O' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+              }`}>{b.providers}</span>
             </label>
           ))}
         </div>
+        <p className="text-[11px] text-gray-400 mt-1">
+          <span className="font-medium">T</span> = The Odds API,&nbsp;
+          <span className="font-medium">O</span> = Odds-API.io.&nbsp;
+          BC.Game, Stake et NetBet ne sont disponibles que via Odds-API.io.
+        </p>
         {selectedBookmakers.length > 0 && (
           <button type="button" onClick={() => setSelectedBookmakers([])}
             className="text-xs text-gray-500 mt-1 hover:underline">
