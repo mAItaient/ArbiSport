@@ -1,0 +1,292 @@
+/**
+ * Moteur de détection et de calcul d'arbitrage 2-way.
+ *
+ * Principe mathématique :
+ *   Il y a arbitrage si la somme des inverses des meilleures cotes est < 1 :
+ *     S = 1/oA + 1/oB < 1
+ *
+ *   Mise optimale sur chaque issue (stake) :
+ *     stakeA = T * (1/oA) / S
+ *     stakeB = T * (1/oB) / S
+ *
+ *   Gains garantis :
+ *     profitA = stakeA * oA - T  (gain net si A gagne)
+ *     profitB = stakeB * oB - T  (gain net si B gagne)
+ *     gainMin = min(profitA, profitB)
+ *     roi     = gainMin / T * 100
+ */
+
+import { decimalFromAmerican } from '../utils/oddsConversion.js';
+import { getBookmakerUrl } from '../integrations/bookmakerUrls.js';
+
+/**
+ * Détermine s'il existe un arbitrage 2-way entre deux cotes décimales.
+ * @param {number} oA - Cote décimale pour l'issue A (ex: 2.10)
+ * @param {number} oB - Cote décimale pour l'issue B (ex: 2.10)
+ * @returns {boolean} true si 1/oA + 1/oB < 1
+ */
+export function isArb(oA, oB) {
+  if (!oA || !oB || oA <= 1.0 || oB <= 1.0) return false;
+  return (1 / oA + 1 / oB) < 1;
+}
+
+/**
+ * Calcule les mises et profits d'un arbitrage 2-way.
+ * @param {number} oA - Cote décimale issue A
+ * @param {number} oB - Cote décimale issue B
+ * @param {number} T  - Mise totale à répartir (ex: 100)
+ * @returns {Object} {stakeA, stakeB, profitA, profitB, gainMin, gainMinPct, roi}
+ */
+export function computeStakes(oA, oB, T) {
+  if (!isArb(oA, oB)) {
+    return null;
+  }
+
+  // Somme des inverses (doit être < 1 pour qu'il y ait arbitrage)
+  const S = 1 / oA + 1 / oB;
+
+  // Répartition optimale des mises
+  const stakeA = T * (1 / oA) / S;
+  const stakeB = T * (1 / oB) / S;
+
+  // Gains nets sur chaque issue
+  const profitA = stakeA * oA - T;
+  const profitB = stakeB * oB - T;
+
+  // Gain minimum garanti (le plus petit des deux profits)
+  const gainMin = Math.min(profitA, profitB);
+  const gainMinPct = (gainMin / T) * 100;
+
+  // ROI = rendement sur la mise totale
+  const roi = gainMinPct;
+
+  return {
+    stakeA: parseFloat(stakeA.toFixed(4)),
+    stakeB: parseFloat(stakeB.toFixed(4)),
+    profitA: parseFloat(profitA.toFixed(4)),
+    profitB: parseFloat(profitB.toFixed(4)),
+    gainMin: parseFloat(gainMin.toFixed(4)),
+    gainMinPct: parseFloat(gainMinPct.toFixed(4)),
+    roi: parseFloat(roi.toFixed(4)),
+  };
+}
+
+/**
+ * Normalise une cote vers le format décimal.
+ * Accepte les formats : décimal (number) ou américain (via conversion).
+ * @param {number} odds - Cote en format décimal ou américain
+ * @param {string} format - 'decimal' | 'american'
+ * @returns {number|null} Cote décimale ou null si invalide
+ */
+function normalizeToDecimal(odds, format = 'decimal') {
+  if (odds === null || odds === undefined || isNaN(odds)) return null;
+  if (format === 'american') {
+    try {
+      return decimalFromAmerican(odds);
+    } catch {
+      return null;
+    }
+  }
+  return odds > 1.0 ? odds : null;
+}
+
+/**
+ * Regroupe les quotes par (event_id, market_key, point) pour les marchés 2-way.
+ * @param {Array<Object>} quotes - Liste de BookmakerQuote
+ * @returns {Map} Clé: "eventId|marketKey|point" → {outcomes: {[label]: [{bookmaker, odds}]}}
+ */
+function groupQuotesByEventMarket(quotes) {
+  const groups = new Map();
+
+  for (const q of quotes) {
+    // Pour les totals et spreads, on distingue par la valeur de line
+    const point = q.point != null ? String(q.point) : '';
+    const groupKey = `${q.event_id}|${q.market_key}|${point}`;
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        event_id: q.event_id,
+        market_key: q.market_key,
+        point: q.point,
+        outcomes: {},
+        bookmaker_quotes: [],
+      });
+    }
+
+    const group = groups.get(groupKey);
+    group.bookmaker_quotes.push(q);
+
+    // Indexe les outcomes
+    const label = q.outcome_label;
+    if (!group.outcomes[label]) {
+      group.outcomes[label] = [];
+    }
+    group.outcomes[label].push({ bookmaker: q.bookmaker, odds: q.odds });
+  }
+
+  return groups;
+}
+
+/**
+ * Identifie les deux issues opposées dans un marché 2-way.
+ * Pour h2h : home / away
+ * Pour totals : over / under (même ligne)
+ * Pour spreads : home / away (même handicap)
+ * @param {Object} group - Groupe de quotes d'un marché
+ * @returns {Array<string>|null} [labelA, labelB] ou null si non 2-way
+ */
+function getTwoWayOutcomes(group) {
+  const outcomeLabels = Object.keys(group.outcomes);
+
+  // Filtre les marchés non 2-way (ex: 3-way avec match nul)
+  if (outcomeLabels.length < 2) return null;
+
+  // Pour les marchés h2h : détecter et exclure les matchs nuls
+  const drawLabels = ['draw', 'tie', 'nul', 'match nul'];
+  const withoutDraw = outcomeLabels.filter(
+    l => !drawLabels.includes(l.toLowerCase())
+  );
+
+  // Uniquement 2 issues restantes (ex: victoire home + victoire away)
+  if (withoutDraw.length === 2) {
+    return withoutDraw;
+  }
+
+  // Cas exact 2-way (totals/spreads)
+  if (outcomeLabels.length === 2) {
+    return outcomeLabels;
+  }
+
+  return null;
+}
+
+/**
+ * Filtre de base pour les opportunités selon les critères utilisateur.
+ * @param {Object} result - Résultat computeStakes + métadonnées
+ * @param {Object} filters - {minRoiPct, minGuaranteedPct, minProfitAbs, minMinutesBeforeStart}
+ * @param {string} commenceTime - ISO string heure de début de l'événement
+ * @returns {boolean}
+ */
+function passesFilters(result, filters, commenceTime) {
+  if (!filters) return true;
+
+  const { minRoiPct = 0, minGuaranteedPct = 0, minProfitAbs = 0, minMinutesBeforeStart = 0 } = filters;
+
+  if (result.roi < minRoiPct) return false;
+  if (result.gainMinPct < minGuaranteedPct) return false;
+  if (result.gainMin < minProfitAbs) return false;
+
+  if (minMinutesBeforeStart > 0 && commenceTime) {
+    const minutesLeft = (new Date(commenceTime) - Date.now()) / 60000;
+    if (minutesLeft < minMinutesBeforeStart) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Détecte toutes les opportunités d'arbitrage 2-way dans un ensemble de quotes.
+ * @param {Array<Object>} quotes - Liste de BookmakerQuote normalisées
+ * @param {Array<Object>} events - Liste d'Event normalisées (pour métadonnées + URLs)
+ * @param {number} stakeTotal - Mise totale pour le calcul (ex: 100)
+ * @param {Object} [filters] - Filtres optionnels
+ * @param {string} [provider] - Nom du fournisseur de données
+ * @returns {Array<Object>} Liste d'opportunités d'arbitrage
+ */
+export function findOpportunities(quotes, events, stakeTotal, filters, provider) {
+  const opportunities = [];
+
+  // Index des events par id pour accès rapide
+  const eventIndex = {};
+  if (events) {
+    for (const ev of events) {
+      eventIndex[ev.id] = ev;
+    }
+  }
+
+  // Regroupe par (event, market, point)
+  const groups = groupQuotesByEventMarket(quotes);
+
+  for (const [, group] of groups) {
+    const twoWayOutcomes = getTwoWayOutcomes(group);
+    if (!twoWayOutcomes) continue;
+
+    const [labelA, labelB] = twoWayOutcomes;
+    const quotesA = group.outcomes[labelA] || [];
+    const quotesB = group.outcomes[labelB] || [];
+
+    const event = eventIndex[group.event_id];
+    const commenceTime = event?.commence_time;
+
+    // Teste toutes les paires (bookmakerI sur A, bookmakerJ sur B), i ≠ j
+    for (const qA of quotesA) {
+      for (const qB of quotesB) {
+        if (qA.bookmaker === qB.bookmaker) continue;
+
+        const oA = normalizeToDecimal(qA.odds);
+        const oB = normalizeToDecimal(qB.odds);
+
+        if (!oA || !oB) continue;
+
+        const result = computeStakes(oA, oB, stakeTotal);
+        if (!result) continue;
+
+        if (!passesFilters(result, filters, commenceTime)) continue;
+
+        // Récupère les URLs deep-link pour les bookmakers
+        const urlA = getBookmakerUrl(provider, qA.bookmaker, event, labelA);
+        const urlB = getBookmakerUrl(provider, qB.bookmaker, event, labelB);
+
+        const marketLabel = getMarketLabel(group.market_key, group.point);
+
+        opportunities.push({
+          provider: provider || '',
+          sport: event?.sport || '',
+          league: event?.league || '',
+          event_id: group.event_id,
+          event_label: event?.label || group.event_id,
+          market_key: group.market_key,
+          market_label: marketLabel,
+          outcome_a_label: labelA,
+          outcome_b_label: labelB,
+          bookmaker_a: qA.bookmaker,
+          bookmaker_b: qB.bookmaker,
+          odds_a: oA,
+          odds_b: oB,
+          stake_total: stakeTotal,
+          stake_a: result.stakeA,
+          stake_b: result.stakeB,
+          profit_a: result.profitA,
+          profit_b: result.profitB,
+          gain_min: result.gainMin,
+          gain_min_pct: result.gainMinPct,
+          roi: result.roi,
+          bookmaker_a_url: urlA,
+          bookmaker_b_url: urlB,
+          commence_time: commenceTime || null,
+        });
+      }
+    }
+  }
+
+  return opportunities;
+}
+
+/**
+ * Retourne un libellé lisible pour un marché.
+ * @param {string} marketKey
+ * @param {number|null} point
+ * @returns {string}
+ */
+function getMarketLabel(marketKey, point) {
+  const labels = {
+    h2h: 'Victoire/Défaite',
+    totals: point != null ? `Total (${point})` : 'Total buts',
+    spreads: point != null ? `Handicap (${point})` : 'Handicap',
+    draw_no_bet: 'Victoire sans nul',
+    btts: 'Les deux équipes marquent',
+  };
+  return labels[marketKey] || marketKey;
+}
+
+export default { isArb, computeStakes, findOpportunities };
