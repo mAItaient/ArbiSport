@@ -216,27 +216,34 @@ export async function getOdds({
   markets,
   commenceTimeFrom,
   commenceTimeTo,
-  limit = 50,
+  limit = 25,
 } = {}) {
   if (!sport) {
     throw new Error('Paramètre sport requis pour Odds-API.io getOdds');
   }
 
-  // Étape 1 : liste les événements à venir
+  // Étape 1 : liste les événements à venir.
+  // Statuses valides selon la doc /v3/events : pending, live, settled.
+  // On veut les pré-match (pending) ET les events en cours (live).
   const events = await getEvents({
     sport,
     leagueSlug,
-    status: 'upcoming',
+    status: 'pending,live',
     from: commenceTimeFrom,
     to: commenceTimeTo,
   });
 
   if (events.length === 0) return { events: [], quotes: [] };
 
-  // Étape 2 : récupère les cotes par batches de 10 (économise crédits)
+  // Étape 2 : récupère les cotes par batches de 10 (économise crédits).
+  // /odds/multi exige `bookmakers` non vide — si l'utilisateur n'en a pas fourni,
+  // on tombe sur la liste complète des 13 cibles côté Odds-API.io.
   const limited = events.slice(0, Math.max(1, limit));
   const eventIds = limited.map((e) => e.id);
-  const bmList = normalizeBookmakerList(bookmakers);
+  let bmList = normalizeBookmakerList(bookmakers);
+  if (bmList.length === 0) {
+    bmList = TARGET_BOOKMAKERS.map((b) => b.oddsApiIo).filter(Boolean);
+  }
 
   const allRawEvents = [];
   for (let i = 0; i < eventIds.length; i += 10) {
@@ -264,19 +271,20 @@ export async function getOdds({
 /**
  * Parse la réponse Odds-API.io pour un événement et alimente le tableau quotes.
  *
- * Format attendu (vérifié sur la doc) :
+ * Format officiel (vérifié sur https://docs.odds-api.io/llms-full.txt) :
  *   {
- *     id, sport, league, home, away, commenceTime, ...,
- *     bookmakers: [
- *       { id: 'Pinnacle', markets: {
- *           'ML':            { home: '1.91', away: '2.10' },
- *           'Totals':        [{ point: 2.5, over: '1.95', under: '1.87' }, ...],
- *           'Asian Handicap':[{ hdp: -1.5, home: '1.91', away: '2.10' }, ...],
- *           'Spread':        [{ point: -1.5, home: '1.91', away: '2.10' }, ...]
- *         }
- *       }
- *     ]
+ *     id, home, away, date, status, sport, league, urls,
+ *     bookmakers: {
+ *       "Pinnacle": [
+ *         { "name": "ML",             "updatedAt": "...", "odds": [{"home":"1.91","away":"2.10"}]                  },
+ *         { "name": "Asian Handicap", "updatedAt": "...", "odds": [{"hdp":-1.5,"home":"1.91","away":"2.10"}, ...] },
+ *         { "name": "Totals",         "updatedAt": "...", "odds": [{"hdp":2.5,"over":"1.95","under":"1.87"}]      }
+ *       ]
+ *     }
  *   }
+ *
+ * `bookmakers` est UN OBJET (clé = nom du bookmaker), et la valeur est UN
+ * ARRAY de marchés. Chaque marché contient `name` + `odds` (array de lignes).
  *
  * @param {Object} raw
  * @param {string} eventId
@@ -286,32 +294,62 @@ export async function getOdds({
 export function parseOddsResponse(raw, eventId, wantedMarkets, quotes) {
   if (!raw || !raw.bookmakers) return;
 
-  for (const bm of raw.bookmakers) {
-    const bmKey = bm.id || bm.name || bm.key;
-    const canonical = canonicalBookmakerId(bmKey) || bmKey;
+  const bmObj = raw.bookmakers;
 
-    const markets = bm.markets || {};
-    // Cas Array (rarement renvoyé par cet endpoint mais on tolère)
-    if (Array.isArray(markets)) {
-      for (const m of markets) parseMarketObject(canonical, m.key || m.name, m, eventId, wantedMarkets, quotes);
-      continue;
+  // Cas nominal : objet { "Pinnacle": [markets...] }
+  if (!Array.isArray(bmObj) && typeof bmObj === 'object') {
+    for (const [bmKey, marketsArray] of Object.entries(bmObj)) {
+      const canonical = canonicalBookmakerId(bmKey) || bmKey;
+      if (!Array.isArray(marketsArray)) continue;
+      for (const market of marketsArray) {
+        parseMarketObject(canonical, market?.name, market, eventId, wantedMarkets, quotes);
+      }
     }
+    return;
+  }
 
-    for (const [marketName, marketData] of Object.entries(markets)) {
-      parseMarketObject(canonical, marketName, marketData, eventId, wantedMarkets, quotes);
+  // Tolérance : si jamais l'API renvoie un array de {id|name, markets:[...]}
+  if (Array.isArray(bmObj)) {
+    for (const bm of bmObj) {
+      const bmKey = bm.id || bm.name || bm.key;
+      const canonical = canonicalBookmakerId(bmKey) || bmKey;
+      const marketsArray = Array.isArray(bm.markets) ? bm.markets : [];
+      for (const market of marketsArray) {
+        parseMarketObject(canonical, market?.name, market, eventId, wantedMarkets, quotes);
+      }
     }
   }
 }
 
 /**
- * Parse un marché Odds-API.io individuel.
- * marketName ∈ {'ML', 'Totals', 'Asian Handicap', 'Spread', 'Both Teams to Score', ...}
+ * Parse UN marché Odds-API.io (forme `{name, updatedAt, odds: [...]}`).
+ *
+ * Chaque entrée du tableau `odds` représente UNE ligne (un seul couple de cotes) :
+ *   - ML            : [{home, away}]               ou [{home, draw, away}] (3-way → ignoré)
+ *   - Totals        : [{hdp: <line>, over, under}, ...]
+ *   - Asian Handicap: [{hdp: <line>, home, away},  ...]
+ *   - Spread        : [{hdp: <line>, home, away},  ...]
+ *   - Both Teams to Score : [{yes, no}]
+ *   - Draw No Bet   : [{home, away}]
  */
 function parseMarketObject(bookmaker, marketName, marketData, eventId, wantedMarkets, quotes) {
   if (!marketName || marketData == null) return;
   const internalKey = mapMarketNameToInternal(marketName);
   if (!internalKey) return;
   if (wantedMarkets && wantedMarkets.size > 0 && !wantedMarkets.has(internalKey)) return;
+
+  // Récupère l'array `odds` qui contient les couples de cotes.
+  // Tolérance : si l'API renvoie directement un objet/array sans wrapper `odds`.
+  let oddsArr;
+  if (Array.isArray(marketData)) {
+    oddsArr = marketData;
+  } else if (Array.isArray(marketData.odds)) {
+    oddsArr = marketData.odds;
+  } else if (typeof marketData === 'object') {
+    oddsArr = [marketData];
+  } else {
+    return;
+  }
 
   const push = (label, odds, point) => {
     const n = parseFloat(odds);
@@ -326,75 +364,61 @@ function parseMarketObject(bookmaker, marketName, marketData, eventId, wantedMar
     });
   };
 
-  // ML (Moneyline) → 2 issues home/away (ou draw pour foot, on l'écarte)
+  // ML (Moneyline)
+  // Forme officielle : [{home, away}] ou [{home, draw, away}] (3-way).
+  // Si une seule ligne contient `draw`, on rejette le marché complet (1X2 football).
   if (internalKey === 'h2h') {
-    if (Array.isArray(marketData)) {
-      // forme rare : [{home, away}]
-      for (const m of marketData) {
-        push('home', m.home);
-        push('away', m.away);
-      }
-    } else if (typeof marketData === 'object') {
-      if (marketData.draw != null) {
-        // Marché 3-way (1X2 football) — on l'ignore intégralement pour h2h
-        return;
-      }
-      push('home', marketData.home);
-      push('away', marketData.away);
+    if (oddsArr.some((o) => o && o.draw != null)) return;
+    for (const o of oddsArr) {
+      if (!o) continue;
+      push('home', o.home);
+      push('away', o.away);
     }
     return;
   }
 
-  // BTTS → yes/no
+  // BTTS — [{yes, no}]
   if (internalKey === 'btts') {
-    if (Array.isArray(marketData)) {
-      for (const m of marketData) {
-        push('yes', m.yes);
-        push('no', m.no);
-      }
-    } else if (typeof marketData === 'object') {
-      push('yes', marketData.yes);
-      push('no', marketData.no);
+    for (const o of oddsArr) {
+      if (!o) continue;
+      push('yes', o.yes);
+      push('no',  o.no);
     }
     return;
   }
 
-  // Draw No Bet → home/away (nul remboursé)
+  // Draw No Bet — [{home, away}] (le nul rembourse, donc 2-way par construction)
   if (internalKey === 'draw_no_bet') {
-    if (Array.isArray(marketData)) {
-      for (const m of marketData) {
-        push('home', m.home);
-        push('away', m.away);
-      }
-    } else if (typeof marketData === 'object') {
-      push('home', marketData.home);
-      push('away', marketData.away);
+    for (const o of oddsArr) {
+      if (!o) continue;
+      push('home', o.home);
+      push('away', o.away);
     }
     return;
   }
 
-  // Totals → liste de {point, over, under}
+  // Totals — [{hdp: <line>, over, under}, ...]
+  // (la doc utilise `hdp`, pas `point` ni `total`)
   if (internalKey === 'totals') {
-    const items = Array.isArray(marketData) ? marketData : [marketData];
-    for (const m of items) {
-      const point = m.point ?? m.line ?? m.total;
+    for (const o of oddsArr) {
+      if (!o) continue;
+      const point = o.hdp ?? o.point ?? o.line ?? o.total;
       if (point == null) continue;
-      push('over',  m.over,  point);
-      push('under', m.under, point);
+      push('over',  o.over,  Number(point));
+      push('under', o.under, Number(point));
     }
     return;
   }
 
-  // Spreads / Asian Handicap → liste de {hdp|point, home, away}
+  // Spreads / Asian Handicap — [{hdp, home, away}, ...]
   if (internalKey === 'spreads') {
-    const items = Array.isArray(marketData) ? marketData : [marketData];
-    for (const m of items) {
-      // home côté hdp (-1.5 par ex), away côté +1.5
-      const hdpHome = m.hdp ?? m.point ?? m.handicap;
+    for (const o of oddsArr) {
+      if (!o) continue;
+      const hdpHome = o.hdp ?? o.point ?? o.handicap;
       if (hdpHome == null) continue;
       const hdpAway = -Number(hdpHome);
-      push('home', m.home, Number(hdpHome));
-      push('away', m.away, hdpAway);
+      push('home', o.home, Number(hdpHome));
+      push('away', o.away, hdpAway);
     }
     return;
   }
@@ -434,20 +458,33 @@ function normalizeMarketsList(input) {
 
 /**
  * Normalise un événement brut Odds-API.io vers le format interne.
+ *
+ * Format officiel /v3/events :
+ *   { id, home, away, date, status, sport:{name,slug}, league:{name,slug}, ... }
+ * Selon la doc, c'est `raw.date` (ISO 8601) qui porte la date du match.
+ * On supporte aussi les alias `commenceTime`/`startTime` au cas où.
  */
 export function normalizeEvent(raw) {
   if (!raw) return null;
+  // sport/league peuvent être des objets {name, slug} ou des strings.
+  const sport = typeof raw.sport === 'object' && raw.sport !== null
+    ? (raw.sport.slug || raw.sport.name || null)
+    : (raw.sport || null);
+  const league = typeof raw.league === 'object' && raw.league !== null
+    ? (raw.league.name || raw.league.slug || null)
+    : (raw.league || raw.leagueName || null);
+
   return {
     id: raw.id || raw.eventId || raw.event_id,
-    sport: raw.sport || null,
-    league: raw.league || raw.leagueName || null,
+    sport,
+    league,
     label: `${raw.home || raw.homeTeam || ''} vs ${raw.away || raw.awayTeam || ''}`.trim(),
     home_team: raw.home || raw.homeTeam || null,
     away_team: raw.away || raw.awayTeam || null,
-    commence_time: raw.commenceTime || raw.startTime || raw.start || null,
+    commence_time: raw.date || raw.commenceTime || raw.startTime || raw.start || null,
     provider: PROVIDER,
     externalId: raw.externalId || raw.id || null,
-    slug: raw.slug || null,
+    slug: typeof raw.league === 'object' ? (raw.league?.slug || null) : (raw.slug || null),
     urls: raw.urls || null,
   };
 }
@@ -457,7 +494,7 @@ export function normalizeEvent(raw) {
  */
 export const listSports = getSports;
 export const listEvents = async ({ sport, leagueSlug } = {}) =>
-  getEvents({ sport, leagueSlug, status: 'upcoming' });
+  getEvents({ sport, leagueSlug, status: 'pending,live' });
 
 export default {
   getSports,

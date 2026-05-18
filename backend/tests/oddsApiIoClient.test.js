@@ -1,13 +1,36 @@
 /**
- * Tests du client Odds-API.io (parsing + mapping de marchés).
- * Pas de réseau : on teste les fonctions pures de transformation.
+ * Tests du client Odds-API.io — utilise le format de réponse RÉEL
+ * documenté officiellement (https://docs.odds-api.io/llms-full.txt).
+ *
+ * Format clé :
+ *   bookmakers est un OBJET { "Bet365": [ {name, updatedAt, odds:[...]}, ... ] }
+ *   - chaque marché : { name: "ML"|"Asian Handicap"|"Totals"|..., odds: [ {...} ] }
+ *   - ML  → odds: [{home, away}] (3-way si draw présent → ignoré)
+ *   - Asian Handicap / Spread → odds: [{hdp, home, away}, ...]
+ *   - Totals → odds: [{hdp, over, under}, ...]
+ *   - Both Teams to Score → odds: [{yes, no}]
+ *
+ * On teste UNIQUEMENT les fonctions pures (pas de réseau).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import axios from 'axios';
 import {
   parseOddsResponse,
   mapMarketNameToInternal,
   normalizeEvent,
+  getOdds,
 } from '../src/integrations/oddsApiIoClient.js';
+
+// Mock du gestionnaire de clés (évite la dépendance DB)
+vi.mock('../src/core/apiKeyManager.js', () => ({
+  apiKeyManager: {
+    getKeyForRequest: () => ({ api_key_value: 'test-key' }),
+    updateKeyUsage: () => {},
+    markLimited: () => {},
+  },
+}));
+
+vi.mock('axios');
 
 describe('mapMarketNameToInternal', () => {
   it('reconnaît ML / Moneyline → h2h', () => {
@@ -45,16 +68,18 @@ describe('mapMarketNameToInternal', () => {
   });
 });
 
-describe('parseOddsResponse — Moneyline (h2h)', () => {
-  it('extrait home/away pour ML 2-way', () => {
+describe('parseOddsResponse — Moneyline (ML) au format officiel', () => {
+  it('extrait home/away depuis odds: [{home, away}]', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        { id: 'Pinnacle', markets: { 'ML': { home: '1.91', away: '2.10' } } },
-      ],
+      id: 123456,
+      bookmakers: {
+        Pinnacle: [
+          { name: 'ML', updatedAt: '2025-10-04T10:30:00Z', odds: [{ home: '1.91', away: '2.10' }] },
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
+    parseOddsResponse(raw, 123456, new Set(['h2h']), quotes);
     expect(quotes.length).toBe(2);
     const home = quotes.find((q) => q.outcome_label === 'home');
     const away = quotes.find((q) => q.outcome_label === 'away');
@@ -64,39 +89,40 @@ describe('parseOddsResponse — Moneyline (h2h)', () => {
     expect(home.market_key).toBe('h2h');
   });
 
-  it('rejette ML à 3 issues (draw présent — 1X2 football)', () => {
+  it('rejette ML 3-way (draw présent — 1X2 football)', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        { id: 'Betclic FR', markets: { 'ML': { home: '1.80', draw: '4.00', away: '4.50' } } },
-      ],
+      id: 1,
+      bookmakers: {
+        'Betclic FR': [
+          { name: 'ML', odds: [{ home: '1.80', draw: '4.00', away: '4.50' }] },
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
-    // 3-way → on ignore complètement
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
     expect(quotes.length).toBe(0);
   });
 });
 
-describe('parseOddsResponse — Asian Handicap', () => {
-  it('extrait toutes les lignes hdp séparément', () => {
+describe('parseOddsResponse — Asian Handicap au format officiel', () => {
+  it('extrait toutes les lignes hdp depuis odds: [{hdp, home, away}, ...]', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        {
-          id: 'Pinnacle',
-          markets: {
-            'Asian Handicap': [
+      id: 1,
+      bookmakers: {
+        Pinnacle: [
+          {
+            name: 'Asian Handicap',
+            odds: [
               { hdp: -1.5, home: '1.91', away: '2.10' },
               { hdp: -1.0, home: '2.25', away: '1.60' },
               { hdp: 0,    home: '1.95', away: '1.95' },
             ],
           },
-        },
-      ],
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['spreads']), quotes);
+    parseOddsResponse(raw, 1, new Set(['spreads']), quotes);
     expect(quotes.length).toBe(6);
 
     const hdp15 = quotes.filter((q) => Math.abs(q.point) === 1.5);
@@ -107,40 +133,53 @@ describe('parseOddsResponse — Asian Handicap', () => {
     expect(away15.point).toBe(1.5);
   });
 
-  it('skip les lignes sans valeur hdp', () => {
+  it('reconnaît aussi "Spread" comme marché spreads', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        {
-          id: 'Pinnacle',
-          markets: { 'Asian Handicap': [{ home: '1.91', away: '2.10' }] },
-        },
-      ],
+      id: 1,
+      bookmakers: {
+        Bet365: [
+          { name: 'Spread', odds: [{ hdp: -2.5, home: '1.95', away: '1.85' }] },
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['spreads']), quotes);
+    parseOddsResponse(raw, 1, new Set(['spreads']), quotes);
+    expect(quotes.length).toBe(2);
+  });
+
+  it('skip les lignes sans valeur hdp', () => {
+    const raw = {
+      id: 1,
+      bookmakers: {
+        Pinnacle: [
+          { name: 'Asian Handicap', odds: [{ home: '1.91', away: '2.10' }] },
+        ],
+      },
+    };
+    const quotes = [];
+    parseOddsResponse(raw, 1, new Set(['spreads']), quotes);
     expect(quotes.length).toBe(0);
   });
 });
 
-describe('parseOddsResponse — Totals', () => {
-  it('extrait Over/Under pour chaque ligne de point', () => {
+describe('parseOddsResponse — Totals au format officiel', () => {
+  it('extrait Over/Under pour chaque ligne hdp', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        {
-          id: 'Pinnacle',
-          markets: {
-            'Totals': [
-              { point: 2.5, over: '1.95', under: '1.87' },
-              { point: 3.0, over: '2.20', under: '1.71' },
+      id: 1,
+      bookmakers: {
+        Pinnacle: [
+          {
+            name: 'Totals',
+            odds: [
+              { hdp: 2.5, over: '1.95', under: '1.87' },
+              { hdp: 3.0, over: '2.20', under: '1.71' },
             ],
           },
-        },
-      ],
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['totals']), quotes);
+    parseOddsResponse(raw, 1, new Set(['totals']), quotes);
     expect(quotes.length).toBe(4);
     const overs = quotes.filter((q) => q.outcome_label === 'over');
     expect(overs.length).toBe(2);
@@ -148,16 +187,18 @@ describe('parseOddsResponse — Totals', () => {
   });
 });
 
-describe('parseOddsResponse — BTTS', () => {
-  it('extrait yes/no', () => {
+describe('parseOddsResponse — BTTS au format officiel', () => {
+  it('extrait yes/no depuis odds: [{yes, no}]', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        { id: 'Pinnacle', markets: { 'Both Teams to Score': { yes: '1.85', no: '1.95' } } },
-      ],
+      id: 1,
+      bookmakers: {
+        Pinnacle: [
+          { name: 'Both Teams to Score', odds: [{ yes: '1.85', no: '1.95' }] },
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['btts']), quotes);
+    parseOddsResponse(raw, 1, new Set(['btts']), quotes);
     expect(quotes.length).toBe(2);
     expect(quotes.find((q) => q.outcome_label === 'yes').odds).toBe(1.85);
   });
@@ -166,72 +207,100 @@ describe('parseOddsResponse — BTTS', () => {
 describe('parseOddsResponse — filtrage par wantedMarkets', () => {
   it('ignore les marchés non demandés', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [
-        {
-          id: 'Pinnacle',
-          markets: {
-            'ML': { home: '1.91', away: '2.10' },
-            'Totals': [{ point: 2.5, over: '1.95', under: '1.87' }],
-          },
-        },
-      ],
+      id: 1,
+      bookmakers: {
+        Pinnacle: [
+          { name: 'ML', odds: [{ home: '1.91', away: '2.10' }] },
+          { name: 'Totals', odds: [{ hdp: 2.5, over: '1.95', under: '1.87' }] },
+        ],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
-    // On ne veut que h2h, donc seulement 2 quotes (pas les totals)
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
     expect(quotes.length).toBe(2);
     expect(quotes.every((q) => q.market_key === 'h2h')).toBe(true);
   });
 });
 
-describe('parseOddsResponse — bookmaker canonicalisation', () => {
+describe('parseOddsResponse — canonicalisation des bookmakers', () => {
   it('mappe "Betclic FR" → "betclic"', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [{ id: 'Betclic FR', markets: { 'ML': { home: '1.91', away: '2.10' } } }],
+      id: 1,
+      bookmakers: {
+        'Betclic FR': [{ name: 'ML', odds: [{ home: '1.91', away: '2.10' }] }],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
     expect(quotes[0].bookmaker).toBe('betclic');
   });
 
   it('mappe "1xbet" → "onexbet"', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [{ id: '1xbet', markets: { 'ML': { home: '1.91', away: '2.10' } } }],
+      id: 1,
+      bookmakers: {
+        '1xbet': [{ name: 'ML', odds: [{ home: '1.91', away: '2.10' }] }],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
     expect(quotes[0].bookmaker).toBe('onexbet');
+  });
+
+  it('plusieurs bookmakers dans le même event', () => {
+    const raw = {
+      id: 1,
+      bookmakers: {
+        Pinnacle: [{ name: 'ML', odds: [{ home: '1.91', away: '2.10' }] }],
+        '1xbet':  [{ name: 'ML', odds: [{ home: '2.05', away: '1.95' }] }],
+        Stake:    [{ name: 'ML', odds: [{ home: '2.00', away: '1.98' }] }],
+      },
+    };
+    const quotes = [];
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
+    expect(quotes.length).toBe(6);
+    const bms = new Set(quotes.map((q) => q.bookmaker));
+    expect(bms).toEqual(new Set(['pinnacle', 'onexbet', 'stake']));
   });
 });
 
-describe('normalizeEvent', () => {
-  it('normalise un event Odds-API.io', () => {
+describe('normalizeEvent — champs date / sport / league', () => {
+  it('lit raw.date (format officiel)', () => {
     const ev = normalizeEvent({
-      id: 'evt-1',
-      sport: 'football',
-      league: 'Premier League',
-      home: 'PSG',
-      away: 'Marseille',
-      commenceTime: '2026-06-15T19:00:00Z',
-      slug: 'psg-vs-marseille',
+      id: 123456,
+      home: 'Manchester United', away: 'Liverpool',
+      date: '2025-10-15T15:00:00Z',
+      status: 'pending',
+      sport: { name: 'Football', slug: 'football' },
+      league: { name: 'England - Premier League', slug: 'england-premier-league' },
     });
-    expect(ev.id).toBe('evt-1');
-    expect(ev.home_team).toBe('PSG');
-    expect(ev.label).toBe('PSG vs Marseille');
+    expect(ev.id).toBe(123456);
+    expect(ev.home_team).toBe('Manchester United');
+    expect(ev.commence_time).toBe('2025-10-15T15:00:00Z');
+    expect(ev.sport).toBe('football');
+    expect(ev.league).toBe('England - Premier League');
+    expect(ev.slug).toBe('england-premier-league');
     expect(ev.provider).toBe('oddsApiIo');
   });
 
-  it('tolère champs alternatifs (homeTeam au lieu de home)', () => {
+  it('tolère sport/league sous forme de string', () => {
+    const ev = normalizeEvent({
+      id: 'x', home: 'A', away: 'B',
+      date: '2026-01-01T00:00:00Z',
+      sport: 'tennis',
+      league: 'ATP French Open',
+    });
+    expect(ev.sport).toBe('tennis');
+    expect(ev.league).toBe('ATP French Open');
+  });
+
+  it('tolère les alias commenceTime/startTime', () => {
     const ev = normalizeEvent({
       eventId: 'evt-2',
       homeTeam: 'Liverpool', awayTeam: 'Arsenal',
       startTime: '2026-01-01T00:00:00Z',
     });
     expect(ev.id).toBe('evt-2');
-    expect(ev.home_team).toBe('Liverpool');
     expect(ev.commence_time).toBe('2026-01-01T00:00:00Z');
   });
 });
@@ -241,19 +310,155 @@ describe('parseOddsResponse — robustesse', () => {
     const quotes = [];
     parseOddsResponse(null, 'e1', new Set(), quotes);
     parseOddsResponse({}, 'e1', new Set(), quotes);
-    parseOddsResponse({ bookmakers: [] }, 'e1', new Set(), quotes);
+    parseOddsResponse({ bookmakers: {} }, 'e1', new Set(), quotes);
     expect(quotes.length).toBe(0);
   });
 
   it('ignore les cotes <= 1.0 (invalides)', () => {
     const raw = {
-      id: 'e1',
-      bookmakers: [{ id: 'Pinnacle', markets: { 'ML': { home: '0.5', away: '2.10' } } }],
+      id: 1,
+      bookmakers: {
+        Pinnacle: [{ name: 'ML', odds: [{ home: '0.5', away: '2.10' }] }],
+      },
     };
     const quotes = [];
-    parseOddsResponse(raw, 'e1', new Set(['h2h']), quotes);
-    // Seule la cote valide passe
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
     expect(quotes.length).toBe(1);
     expect(quotes[0].outcome_label).toBe('away');
+  });
+
+  it('tolère la forme array (fallback historique)', () => {
+    // Forme alternative : bookmakers est un array de {id|name, markets: [...]}
+    const raw = {
+      id: 1,
+      bookmakers: [
+        {
+          name: 'Pinnacle',
+          markets: [
+            { name: 'ML', odds: [{ home: '1.91', away: '2.10' }] },
+          ],
+        },
+      ],
+    };
+    const quotes = [];
+    parseOddsResponse(raw, 1, new Set(['h2h']), quotes);
+    expect(quotes.length).toBe(2);
+    expect(quotes[0].bookmaker).toBe('pinnacle');
+  });
+});
+
+// ─── Test E2E : getOdds avec axios mocké ────────────────────────────────────
+describe('getOdds — pipeline E2E avec format API réel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('appelle /events avec status=pending,live puis /odds/multi avec format officiel', async () => {
+    // 1er appel : /events → renvoie 2 events
+    axios.get.mockImplementationOnce(async (url, opts) => {
+      expect(url).toBe('https://api.odds-api.io/v3/events');
+      expect(opts.params.status).toBe('pending,live');
+      expect(opts.params.sport).toBe('football');
+      expect(opts.params.league).toBe('england-premier-league');
+      return {
+        data: [
+          {
+            id: 100, home: 'Manchester United', away: 'Liverpool',
+            date: '2025-10-15T15:00:00Z', status: 'pending',
+            sport: { slug: 'football' },
+            league: { slug: 'england-premier-league', name: 'EPL' },
+          },
+          {
+            id: 101, home: 'Arsenal', away: 'Chelsea',
+            date: '2025-10-16T17:00:00Z', status: 'pending',
+            sport: { slug: 'football' },
+            league: { slug: 'england-premier-league', name: 'EPL' },
+          },
+        ],
+        headers: {},
+      };
+    });
+
+    // 2e appel : /odds/multi → renvoie les cotes des 2 events
+    axios.get.mockImplementationOnce(async (url, opts) => {
+      expect(url).toBe('https://api.odds-api.io/v3/odds/multi');
+      expect(opts.params.eventIds).toBe('100,101');
+      expect(opts.params.bookmakers).toContain('Pinnacle');
+      return {
+        data: [
+          {
+            id: 100,
+            bookmakers: {
+              Pinnacle: [
+                { name: 'ML', odds: [{ home: '1.91', away: '2.10' }] },
+                { name: 'Asian Handicap', odds: [{ hdp: -1.5, home: '1.91', away: '2.10' }] },
+                { name: 'Totals', odds: [{ hdp: 2.5, over: '1.95', under: '1.87' }] },
+              ],
+              'Betclic FR': [
+                { name: 'ML', odds: [{ home: '2.05', away: '1.95' }] },
+              ],
+            },
+          },
+          {
+            id: 101,
+            bookmakers: {
+              Pinnacle: [
+                { name: 'ML', odds: [{ home: '1.80', away: '2.20' }] },
+              ],
+            },
+          },
+        ],
+        headers: {},
+      };
+    });
+
+    const result = await getOdds({
+      sport: 'football',
+      leagueSlug: 'england-premier-league',
+      bookmakers: ['Pinnacle', 'Betclic FR'],
+      markets: ['h2h', 'spreads', 'totals'],
+    });
+
+    expect(result.events.length).toBe(2);
+    expect(result.events[0].home_team).toBe('Manchester United');
+    expect(result.events[0].commence_time).toBe('2025-10-15T15:00:00Z');
+
+    // Quotes attendues :
+    //   event 100 : pinnacle ML (2), pinnacle spreads (2), pinnacle totals (2), betclic ML (2)
+    //   event 101 : pinnacle ML (2)
+    expect(result.quotes.length).toBe(10);
+
+    const ev100h2h = result.quotes.filter((q) => q.event_id === 100 && q.market_key === 'h2h');
+    expect(ev100h2h.length).toBe(4);
+    const ev100spreads = result.quotes.filter((q) => q.event_id === 100 && q.market_key === 'spreads');
+    expect(ev100spreads.length).toBe(2);
+    expect(ev100spreads.find((q) => q.outcome_label === 'home').point).toBe(-1.5);
+    expect(ev100spreads.find((q) => q.outcome_label === 'away').point).toBe(1.5);
+
+    // Les bookmakers ont bien été canonicalisés
+    const bms = new Set(result.quotes.map((q) => q.bookmaker));
+    expect(bms.has('pinnacle')).toBe(true);
+    expect(bms.has('betclic')).toBe(true);
+  });
+
+  it('retourne {events:[], quotes:[]} quand /events renvoie []', async () => {
+    axios.get.mockResolvedValueOnce({ data: [], headers: {} });
+    const result = await getOdds({ sport: 'football', leagueSlug: 'unknown-league' });
+    expect(result.events).toEqual([]);
+    expect(result.quotes).toEqual([]);
+  });
+
+  it('utilise la liste TARGET_BOOKMAKERS si bookmakers non fourni', async () => {
+    axios.get.mockResolvedValueOnce({
+      data: [{ id: 1, home: 'A', away: 'B', date: '2026-01-01T00:00:00Z', sport: { slug: 'football' } }],
+      headers: {},
+    });
+    axios.get.mockImplementationOnce(async (url, opts) => {
+      // Doit contenir au moins Pinnacle et Stake (cibles)
+      expect(opts.params.bookmakers).toContain('Pinnacle');
+      expect(opts.params.bookmakers).toContain('Stake');
+      return { data: [], headers: {} };
+    });
+    await getOdds({ sport: 'football' });
   });
 });

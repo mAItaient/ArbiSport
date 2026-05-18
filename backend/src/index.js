@@ -82,10 +82,15 @@ function startServer() {
     process.exit(1);
   }
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     logger.info(`Serveur démarré sur http://localhost:${config.port}`);
     logger.info(`Mode : ${config.nodeEnv}`);
   });
+  // Un scan complet peut prendre 60-120 s ; on relâche les timeouts par défaut
+  // pour éviter ECONNRESET côté frontend.
+  server.setTimeout(180000);
+  server.keepAliveTimeout = 180000;
+  server.headersTimeout = 185000;
 }
 
 startServer();
