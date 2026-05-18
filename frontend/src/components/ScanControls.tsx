@@ -1,8 +1,14 @@
 /**
  * Panneau de déclenchement de scan avec paramètres configurables.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ScanParams } from '../types'
+
+const PROVIDERS = [
+  { key: 'theOddsApi', label: 'The Odds API' },
+  { key: 'oddsApiIo',  label: 'Odds-API.io' },
+] as const
+type ProviderKey = typeof PROVIDERS[number]['key']
 
 // Bookmakers disponibles (clés The Odds API)
 const BOOKMAKERS_LIST = [
@@ -91,8 +97,45 @@ export default function ScanControls({ onScan, loading = false }: Props) {
   const [customHours, setCustomHours] = useState(24)
   const [stakeTotal, setStakeTotal] = useState(100)
   const [minRoi, setMinRoi] = useState(0)
-  const [providers, setProviders] = useState<string[]>(['theOddsApi'])
+  const [providers, setProviders] = useState<string[]>([])
+  const [availableProviders, setAvailableProviders] = useState<Set<ProviderKey>>(new Set())
+  const [keysLoaded, setKeysLoaded] = useState(false)
   const [showAllSports, setShowAllSports] = useState(false)
+
+  // Charge la liste des clés API pour déterminer quels providers sont utilisables.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/api-keys')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => {
+        if (cancelled) return
+        const rows: Array<{ provider: string; enabled?: number | boolean; status?: string }> =
+          Array.isArray(data) ? data : []
+        const avail = new Set<ProviderKey>()
+        for (const row of rows) {
+          const enabled = row.enabled === undefined || row.enabled === 1 || row.enabled === true
+          if (!enabled) continue
+          if (row.provider === 'theOddsApi' || row.provider === 'oddsApiIo') {
+            avail.add(row.provider)
+          }
+        }
+        setAvailableProviders(avail)
+        // Auto-sélectionne uniquement les providers ayant au moins une clé.
+        setProviders((prev) => {
+          const filtered = prev.filter((p) => avail.has(p as ProviderKey))
+          if (filtered.length > 0) return filtered
+          // Initial : on coche tous les providers disponibles.
+          return Array.from(avail)
+        })
+        setKeysLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) setKeysLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const displayedSports = showAllSports ? SPORTS_LIST : SPORTS_LIST.slice(0, 10)
 
@@ -148,19 +191,36 @@ export default function ScanControls({ onScan, loading = false }: Props) {
       {/* Fournisseurs */}
       <div>
         <label className="label">Fournisseurs de données</label>
-        <div className="flex gap-3">
-          {['theOddsApi', 'oddsApiIo'].map(p => (
-            <label key={p} className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={providers.includes(p)}
-                onChange={() => toggleItem(providers, setProviders, p)}
-                className="rounded accent-green-600"
-              />
-              <span className="text-sm">{p === 'theOddsApi' ? 'The Odds API' : 'Odds-API.io'}</span>
-            </label>
-          ))}
+        <div className="flex gap-4 flex-wrap">
+          {PROVIDERS.map(p => {
+            const hasKey = availableProviders.has(p.key)
+            const disabled = !hasKey
+            return (
+              <label
+                key={p.key}
+                className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                title={disabled ? 'Aucune clé API configurée pour ce fournisseur' : ''}
+              >
+                <input
+                  type="checkbox"
+                  checked={providers.includes(p.key)}
+                  disabled={disabled}
+                  onChange={() => toggleItem(providers, setProviders, p.key)}
+                  className="rounded accent-green-600"
+                />
+                <span className="text-sm">{p.label}</span>
+                {disabled && (
+                  <span className="text-xs text-orange-600 font-medium">(pas de clé)</span>
+                )}
+              </label>
+            )
+          })}
         </div>
+        {keysLoaded && availableProviders.size === 0 && (
+          <p className="text-xs text-orange-600 mt-1">
+            Aucune clé API configurée. Allez dans <strong>Gestion des clés API</strong> pour en ajouter.
+          </p>
+        )}
       </div>
 
       {/* Sports */}
