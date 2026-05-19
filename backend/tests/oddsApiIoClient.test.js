@@ -20,6 +20,7 @@ import {
   normalizeEvent,
   getOdds,
   ODDS_API_IO_SUPPORTED_BOOKMAKERS,
+  _resetSelectedCache,
 } from '../src/integrations/oddsApiIoClient.js';
 
 // Mock du gestionnaire de clés (évite la dépendance DB)
@@ -352,7 +353,17 @@ describe('parseOddsResponse — robustesse', () => {
 describe('getOdds — pipeline E2E avec format API réel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetSelectedCache();
   });
+
+  // Mock du /bookmakers/selected : par défaut tous les bookmakers cibles
+  // sont autorisés pour ne pas casser les tests existants.
+  function mockBookmakersSelected(list = ['Stake', 'Betclic FR', '1xbet']) {
+    axios.get.mockImplementationOnce(async (url) => {
+      expect(url).toBe('https://api.odds-api.io/v3/bookmakers/selected');
+      return { data: { bookmakers: list, count: list.length }, headers: {} };
+    });
+  }
 
   it('appelle /events avec status=pending,live puis /odds/multi avec format officiel', async () => {
     // 1er appel : /events → renvoie 2 events
@@ -380,7 +391,10 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
       };
     });
 
-    // 2e appel : /odds/multi → renvoie les cotes des 2 events
+    // 2e appel : /bookmakers/selected (autorise Stake + Betclic FR)
+    mockBookmakersSelected(['Stake', 'Betclic FR']);
+
+    // 3e appel : /odds/multi → renvoie les cotes des 2 events
     axios.get.mockImplementationOnce(async (url, opts) => {
       expect(url).toBe('https://api.odds-api.io/v3/odds/multi');
       expect(opts.params.eventIds).toBe('100,101');
@@ -467,8 +481,9 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
       data: [{ id: 1, home: 'A', away: 'B', date: '2026-01-01T00:00:00Z', sport: { slug: 'football' } }],
       headers: {},
     });
+    mockBookmakersSelected(['Stake', 'Betclic FR']);
     axios.get.mockImplementationOnce(async (url, opts) => {
-      // Doit contenir Stake et Betclic FR (cibles supportées),
+      // Doit contenir Stake et Betclic FR (cibles supportées ET autorisées par le plan),
       // mais PAS Pinnacle/Everygame (non supportés par Odds-API.io).
       expect(opts.params.bookmakers).toContain('Stake');
       expect(opts.params.bookmakers).toContain('Betclic FR');
@@ -477,5 +492,36 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
       return { data: [], headers: {} };
     });
     await getOdds({ sport: 'football' });
+  });
+
+  it('respecte la limite des bookmakers sélectionnés côté plan Odds-API.io', async () => {
+    axios.get.mockResolvedValueOnce({
+      data: [{ id: 1, home: 'A', away: 'B', date: '2026-01-01T00:00:00Z', sport: { slug: 'football' } }],
+      headers: {},
+    });
+    // Plan limité : seuls Stake et 1xbet sont autorisés
+    mockBookmakersSelected(['Stake', '1xbet']);
+    axios.get.mockImplementationOnce(async (url, opts) => {
+      expect(opts.params.bookmakers).toBe('Stake,1xbet');
+      return { data: [], headers: {} };
+    });
+    await getOdds({
+      sport: 'football',
+      bookmakers: ['Betclic FR', 'Stake', '1xbet', 'Unibet FR'],
+    });
+  });
+
+  it('skip propre quand aucun bookmaker n’est dans le plan', async () => {
+    axios.get.mockResolvedValueOnce({
+      data: [{ id: 1, home: 'A', away: 'B', date: '2026-01-01T00:00:00Z', sport: { slug: 'football' } }],
+      headers: {},
+    });
+    // Plan limité à des bookmakers non demandés
+    mockBookmakersSelected(['Bet365', 'Pinnacle']);
+    const result = await getOdds({
+      sport: 'football',
+      bookmakers: ['Betclic FR', 'Stake'],
+    });
+    expect(result.quotes).toEqual([]);
   });
 });

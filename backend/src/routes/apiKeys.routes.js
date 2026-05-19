@@ -9,6 +9,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import ApiKey from '../models/ApiKey.js';
+import { getSelectedBookmakers, _resetSelectedCache } from '../integrations/oddsApiIoClient.js';
 
 const router = Router();
 
@@ -96,6 +97,24 @@ router.post('/:id/toggle', (req, res) => {
   if (!key) return res.status(404).json({ error: 'Clé introuvable' });
 
   res.json(maskKey(key));
+});
+
+/**
+ * GET /api/api-keys/odds-api-io/selected-bookmakers
+ * Renvoie la liste des bookmakers sélectionnés côté compte Odds-API.io.
+ * Permet à l'utilisateur de savoir quels bookmakers son plan autorise.
+ */
+router.get('/odds-api-io/selected-bookmakers', async (req, res) => {
+  try {
+    if (req.query.refresh === '1') _resetSelectedCache();
+    const list = await getSelectedBookmakers(req.query.refresh === '1');
+    if (list === null) {
+      return res.status(503).json({ error: 'Impossible de joindre Odds-API.io (clé invalide ou réseau).' });
+    }
+    res.json({ bookmakers: list, count: list.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 function maskKey(key) {

@@ -103,6 +103,8 @@ export default function ScanControls({ onScan, loading = false }: Props) {
   const [availableProviders, setAvailableProviders] = useState<Set<ProviderKey>>(new Set())
   const [keysLoaded, setKeysLoaded] = useState(false)
   const [showAllSports, setShowAllSports] = useState(false)
+  // Bookmakers sélectionnés côté compte Odds-API.io (limités par le plan).
+  const [oddsApiIoAllowed, setOddsApiIoAllowed] = useState<string[] | null>(null)
 
   // Charge la liste des clés API pour déterminer quels providers sont utilisables.
   useEffect(() => {
@@ -138,6 +140,20 @@ export default function ScanControls({ onScan, loading = false }: Props) {
       cancelled = true
     }
   }, [])
+
+  // Charge la liste des bookmakers sélectionnés côté compte Odds-API.io.
+  useEffect(() => {
+    if (!availableProviders.has('oddsApiIo')) return
+    let cancelled = false
+    fetch('/api/api-keys/odds-api-io/selected-bookmakers')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return
+        setOddsApiIoAllowed(Array.isArray(data.bookmakers) ? data.bookmakers : [])
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [availableProviders])
 
   const displayedSports = showAllSports ? SPORTS_LIST : SPORTS_LIST.slice(0, 10)
 
@@ -281,6 +297,22 @@ export default function ScanControls({ onScan, loading = false }: Props) {
           BC.Game, Stake et NetBet ne sont disponibles que via Odds-API.io.&nbsp;
           Pinnacle et Everygame ne sont disponibles que via The Odds API.
         </p>
+        {oddsApiIoAllowed !== null && (
+          <div className="mt-2 text-[11px] bg-blue-50 border border-blue-200 rounded p-2">
+            <span className="font-medium text-blue-700">Plan Odds-API.io :</span>{' '}
+            {oddsApiIoAllowed.length > 0 ? (
+              <>
+                limité à <span className="font-mono font-semibold">{oddsApiIoAllowed.join(', ')}</span>
+                {' '}({oddsApiIoAllowed.length} bookmaker{oddsApiIoAllowed.length > 1 ? 's' : ''}).{' '}
+                Les autres seront automatiquement ignorés sur ce fournisseur.
+              </>
+            ) : (
+              <>aucun bookmaker sélectionné côté compte. Visitez{' '}
+                <a href="https://odds-api.io/manage" target="_blank" rel="noreferrer" className="underline">odds-api.io/manage</a>.
+              </>
+            )}
+          </div>
+        )}
         {selectedBookmakers.length > 0 && (
           <button type="button" onClick={() => setSelectedBookmakers([])}
             className="text-xs text-gray-500 mt-1 hover:underline">

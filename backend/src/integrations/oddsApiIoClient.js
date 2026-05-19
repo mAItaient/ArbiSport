@@ -73,6 +73,49 @@ async function request(endpoint, params = {}) {
   }
 }
 
+// ─── Cache pour la liste des bookmakers sélectionnés ───────────────────
+//
+// Sur Odds-API.io, les plans gratuits/standards limitent l'utilisateur à N
+// bookmakers maximum (typiquement 2). Toute requête à /odds, /odds/multi ou
+// /arbitrage-bets avec un bookmaker hors de cette liste échoue en 403.
+//
+// On récupère donc dynamiquement la liste autorisée via /bookmakers/selected
+// et on filtre nos requêtes en conséquence. Cache 5 minutes.
+let _selectedCache = { data: null, fetchedAt: 0 };
+const SELECTED_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Récupère les bookmakers que l'utilisateur a sélectionné dans son compte
+ * Odds-API.io (peut être limité selon le plan). Résultat caché 5 minutes.
+ *
+ * @param {boolean} [force=false] - force le refresh du cache
+ * @returns {Promise<string[]>} ex: ['Stake', '1xbet']
+ */
+export async function getSelectedBookmakers(force = false) {
+  const now = Date.now();
+  if (!force && _selectedCache.data && now - _selectedCache.fetchedAt < SELECTED_TTL_MS) {
+    return _selectedCache.data;
+  }
+  try {
+    const { data } = await request('/bookmakers/selected');
+    const list = Array.isArray(data?.bookmakers) ? data.bookmakers : [];
+    _selectedCache = { data: list, fetchedAt: now };
+    logger.info(`Odds-API.io bookmakers sélectionnés : [${list.join(', ')}] (${list.length})`);
+    return list;
+  } catch (err) {
+    logger.warn(`Odds-API.io /bookmakers/selected indisponible : ${err.message}`);
+    // En cas d'échec on retourne null pour signaler "inconnu"
+    // (le caller utilisera la liste blanche statique)
+    _selectedCache = { data: null, fetchedAt: now };
+    return null;
+  }
+}
+
+/** Réinitialise le cache (utile pour les tests). */
+export function _resetSelectedCache() {
+  _selectedCache = { data: null, fetchedAt: 0 };
+}
+
 // ─── Endpoints publics (sans authentification) ──────────────────────────────
 
 /**
@@ -252,6 +295,26 @@ export async function getOdds({
   let bmList = normalizeBookmakerList(bookmakers);
   if (bmList.length === 0) {
     bmList = TARGET_BOOKMAKERS.map((b) => b.oddsApiIo).filter(Boolean);
+  }
+
+  // Étape 2bis : intersecte avec la liste des bookmakers sélectionnés dans
+  // le compte Odds-API.io (limité selon le plan, ex: 2 sur le plan gratuit).
+  // Sans ça, /odds/multi rejette toute la requête avec 403 si un bookmaker
+  // hors-quota est demandé.
+  const allowed = await getSelectedBookmakers();
+  if (Array.isArray(allowed) && allowed.length > 0) {
+    const allowedSet = new Set(allowed);
+    const before = bmList.length;
+    bmList = bmList.filter((bm) => allowedSet.has(bm));
+    if (bmList.length < before) {
+      const dropped = before - bmList.length;
+      logger.info(`Odds-API.io : ${dropped} bookmaker(s) filtré(s) hors plan (autorisés: [${allowed.join(', ')}]).`);
+    }
+  }
+
+  if (bmList.length === 0) {
+    logger.warn('Odds-API.io : aucun bookmaker autorisé après filtrage — scan ignoré pour ce sport.');
+    return { events: limited, quotes: [] };
   }
 
   const allRawEvents = [];
