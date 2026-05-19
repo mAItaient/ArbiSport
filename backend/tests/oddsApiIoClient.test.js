@@ -19,6 +19,7 @@ import {
   mapMarketNameToInternal,
   normalizeEvent,
   getOdds,
+  ODDS_API_IO_SUPPORTED_BOOKMAKERS,
 } from '../src/integrations/oddsApiIoClient.js';
 
 // Mock du gestionnaire de clés (évite la dépendance DB)
@@ -383,13 +384,16 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
     axios.get.mockImplementationOnce(async (url, opts) => {
       expect(url).toBe('https://api.odds-api.io/v3/odds/multi');
       expect(opts.params.eventIds).toBe('100,101');
-      expect(opts.params.bookmakers).toContain('Pinnacle');
+      // Pinnacle est filtré (non supporté par Odds-API.io) ; Stake et Betclic FR passent.
+      expect(opts.params.bookmakers).toContain('Stake');
+      expect(opts.params.bookmakers).toContain('Betclic FR');
+      expect(opts.params.bookmakers).not.toContain('Pinnacle');
       return {
         data: [
           {
             id: 100,
             bookmakers: {
-              Pinnacle: [
+              Stake: [
                 { name: 'ML', odds: [{ home: '1.91', away: '2.10' }] },
                 { name: 'Asian Handicap', odds: [{ hdp: -1.5, home: '1.91', away: '2.10' }] },
                 { name: 'Totals', odds: [{ hdp: 2.5, over: '1.95', under: '1.87' }] },
@@ -402,7 +406,7 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
           {
             id: 101,
             bookmakers: {
-              Pinnacle: [
+              Stake: [
                 { name: 'ML', odds: [{ home: '1.80', away: '2.20' }] },
               ],
             },
@@ -415,7 +419,7 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
     const result = await getOdds({
       sport: 'football',
       leagueSlug: 'england-premier-league',
-      bookmakers: ['Pinnacle', 'Betclic FR'],
+      bookmakers: ['Pinnacle', 'Stake', 'Betclic FR'],
       markets: ['h2h', 'spreads', 'totals'],
     });
 
@@ -424,8 +428,8 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
     expect(result.events[0].commence_time).toBe('2025-10-15T15:00:00Z');
 
     // Quotes attendues :
-    //   event 100 : pinnacle ML (2), pinnacle spreads (2), pinnacle totals (2), betclic ML (2)
-    //   event 101 : pinnacle ML (2)
+    //   event 100 : stake ML (2), stake spreads (2), stake totals (2), betclic ML (2)
+    //   event 101 : stake ML (2)
     expect(result.quotes.length).toBe(10);
 
     const ev100h2h = result.quotes.filter((q) => q.event_id === 100 && q.market_key === 'h2h');
@@ -437,8 +441,18 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
 
     // Les bookmakers ont bien été canonicalisés
     const bms = new Set(result.quotes.map((q) => q.bookmaker));
-    expect(bms.has('pinnacle')).toBe(true);
+    expect(bms.has('stake')).toBe(true);
     expect(bms.has('betclic')).toBe(true);
+  });
+
+  it('liste blanche : Pinnacle et Everygame ne sont PAS supportés par Odds-API.io', () => {
+    // Vérifié via GET https://api.odds-api.io/v3/bookmakers le 2026-05-19.
+    expect(ODDS_API_IO_SUPPORTED_BOOKMAKERS.has('Pinnacle')).toBe(false);
+    expect(ODDS_API_IO_SUPPORTED_BOOKMAKERS.has('Everygame')).toBe(false);
+    // Les 11 autres cibles SONT supportées
+    ['Betclic FR', 'NetBet', 'Unibet FR', 'PMU', 'Winamax FR',
+     'Betfair Exchange', '888Sport', '1xbet', 'BetOnline.ag', 'BC.Game', 'Stake']
+      .forEach((bm) => expect(ODDS_API_IO_SUPPORTED_BOOKMAKERS.has(bm)).toBe(true));
   });
 
   it('retourne {events:[], quotes:[]} quand /events renvoie []', async () => {
@@ -454,9 +468,12 @@ describe('getOdds — pipeline E2E avec format API réel', () => {
       headers: {},
     });
     axios.get.mockImplementationOnce(async (url, opts) => {
-      // Doit contenir au moins Pinnacle et Stake (cibles)
-      expect(opts.params.bookmakers).toContain('Pinnacle');
+      // Doit contenir Stake et Betclic FR (cibles supportées),
+      // mais PAS Pinnacle/Everygame (non supportés par Odds-API.io).
       expect(opts.params.bookmakers).toContain('Stake');
+      expect(opts.params.bookmakers).toContain('Betclic FR');
+      expect(opts.params.bookmakers).not.toContain('Pinnacle');
+      expect(opts.params.bookmakers).not.toContain('Everygame');
       return { data: [], headers: {} };
     });
     await getOdds({ sport: 'football' });

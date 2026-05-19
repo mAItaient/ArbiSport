@@ -20,12 +20,12 @@ const BOOKMAKERS_LIST = [
   { key: 'unibet',    label: 'Unibet',    providers: 'T+O' },
   { key: 'pmu',       label: 'PMU',       providers: 'T+O' },
   { key: 'winamax',   label: 'Winamax',   providers: 'T+O' },
-  { key: 'pinnacle',  label: 'Pinnacle',  providers: 'T+O' },
+  { key: 'pinnacle',  label: 'Pinnacle',  providers: 'T' },
   { key: 'betfair',   label: 'Betfair',   providers: 'T+O' },
   { key: '888sport',  label: '888sport',  providers: 'T+O' },
   { key: 'onexbet',   label: '1xBet',     providers: 'T+O' },
   { key: 'betonline', label: 'Betonline', providers: 'T+O' },
-  { key: 'everygame', label: 'Everygame', providers: 'T+O' },
+  { key: 'everygame', label: 'Everygame', providers: 'T' },
   { key: 'bcgame',    label: 'BC.Game',   providers: 'O' },
   { key: 'stake',     label: 'Stake',     providers: 'O' },
 ]
@@ -268,7 +268,9 @@ export default function ScanControls({ onScan, loading = false }: Props) {
               />
               <span>{b.label}</span>
               <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                b.providers === 'T+O' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+                b.providers === 'T+O' ? 'bg-green-100 text-green-700'
+                  : b.providers === 'T' ? 'bg-orange-100 text-orange-700'
+                  : 'bg-blue-100 text-blue-700'
               }`}>{b.providers}</span>
             </label>
           ))}
@@ -276,7 +278,8 @@ export default function ScanControls({ onScan, loading = false }: Props) {
         <p className="text-[11px] text-gray-400 mt-1">
           <span className="font-medium">T</span> = The Odds API,&nbsp;
           <span className="font-medium">O</span> = Odds-API.io.&nbsp;
-          BC.Game, Stake et NetBet ne sont disponibles que via Odds-API.io.
+          BC.Game, Stake et NetBet ne sont disponibles que via Odds-API.io.&nbsp;
+          Pinnacle et Everygame ne sont disponibles que via The Odds API.
         </p>
         {selectedBookmakers.length > 0 && (
           <button type="button" onClick={() => setSelectedBookmakers([])}

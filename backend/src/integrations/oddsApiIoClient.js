@@ -60,6 +60,15 @@ async function request(endpoint, params = {}) {
     if ((status === 401 || status === 403) && key) {
       throw new Error(`Clé Odds-API.io invalide ou non autorisée (${status}).`);
     }
+    // Enrichit le message d'erreur avec le détail de la réponse API (ex: 400)
+    if (err.response?.data) {
+      const detail = typeof err.response.data === 'string'
+        ? err.response.data
+        : (err.response.data.error || err.response.data.message || JSON.stringify(err.response.data));
+      const enriched = new Error(`${err.message} — détail: ${detail}`);
+      enriched.response = err.response;
+      throw enriched;
+    }
     throw err;
   }
 }
@@ -444,11 +453,26 @@ export function mapMarketNameToInternal(name) {
   return null;
 }
 
+/**
+ * Liste blanche des bookmakers réellement supportés par Odds-API.io parmi
+ * nos 13 cibles. Vérifiée via GET /v3/bookmakers (Pinnacle et Everygame sont
+ * absents — ils ne sont disponibles que sur The Odds API).
+ */
+const ODDS_API_IO_SUPPORTED_BOOKMAKERS = new Set([
+  'Betclic FR', 'NetBet', 'Unibet FR', 'PMU', 'Winamax FR',
+  'Betfair Exchange', '888Sport', '1xbet', 'BetOnline.ag',
+  'BC.Game', 'Stake',
+]);
+
 function normalizeBookmakerList(input) {
   if (!input) return [];
-  if (Array.isArray(input)) return input;
-  return String(input).split(',').map((s) => s.trim()).filter(Boolean);
+  const list = Array.isArray(input) ? input : String(input).split(',').map((s) => s.trim()).filter(Boolean);
+  // Filtre stricte : on ne garde que les bookmakers réellement supportés par
+  // Odds-API.io pour éviter les 400 "Invalid bookmaker".
+  return list.filter((bm) => ODDS_API_IO_SUPPORTED_BOOKMAKERS.has(bm));
 }
+
+export { ODDS_API_IO_SUPPORTED_BOOKMAKERS };
 
 function normalizeMarketsList(input) {
   if (!input) return new Set();
