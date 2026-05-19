@@ -18,6 +18,14 @@
 
 import { decimalFromAmerican } from '../utils/oddsConversion.js';
 import { getBookmakerUrl } from '../integrations/bookmakerUrls.js';
+import logger from '../utils/logger.js';
+
+// Au-delà de ce ROI, on suspecte un appariement défectueux (handicap non
+// symétrique, point totals divergent, marché 3-way passé en force) plutôt
+// qu'une vraie opportunité. En arbitrage 2-way réel, le ROI est typiquement
+// dans [0 ; 8 %], rarement >15 %, et un ROI > 30 % est presque toujours un
+// bug en amont.
+const ROI_ANORMAL_THRESHOLD_PCT = 30;
 
 /**
  * Détermine s'il existe un arbitrage 2-way entre deux cotes décimales.
@@ -243,12 +251,24 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
     }
   }
 
+  // Compteurs de rejets pour traçabilité (loggés en fin de fonction)
+  let rejectedSpreadAsym = 0;       // Spreads : home@+H non apparié à away@−H
+  let rejectedTotalsPoint = 0;      // Totals : Over@P apparié à Under@P′ avec P ≠ P′
+  let rejectedSameSide = 0;         // home vs home ou away vs away (sécurité)
+  let rejectedThreeWay = 0;         // marché à 3+ issues détecté
+  let warnHighRoi = 0;
+
   // Regroupe par (event, market, point)
   const groups = groupQuotesByEventMarket(quotes);
 
   for (const [, group] of groups) {
     const twoWayOutcomes = getTwoWayOutcomes(group);
-    if (!twoWayOutcomes) continue;
+    if (!twoWayOutcomes) {
+      // Marché écarté : on incrémente le compteur 3-way si applicable.
+      // (Object.keys(...) >= 3 ⇒ marché à plusieurs issues mutuellement exclusives.)
+      if (Object.keys(group.outcomes).length >= 3) rejectedThreeWay++;
+      continue;
+    }
 
     const [labelA, labelB] = twoWayOutcomes;
     const quotesA = group.outcomes[labelA] || [];
@@ -256,6 +276,13 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
 
     const event = eventIndex[group.event_id];
     const commenceTime = event?.commence_time;
+
+    // Garde-fou : les deux labels doivent être STRICTEMENT distincts. Sinon
+    // un même label pourrait se retrouver "apparié à lui-même" (home vs home).
+    if (labelA === labelB) {
+      rejectedSameSide += quotesA.length * quotesB.length;
+      continue;
+    }
 
     // Teste toutes les paires (bookmakerI sur A, bookmakerJ sur B), i ≠ j.
     // Pour les spreads, on impose qA.point === -qB.point (signes opposés et même magnitude).
@@ -266,19 +293,23 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
         if (qA.bookmaker === qB.bookmaker) continue;
 
         if (isSpread) {
-          // Les deux quotes doivent être sur des côtés opposés et même |point|.
+          // Les deux quotes doivent être sur des côtés opposés ET même |point|.
+          //   home@+H vs away@−H  →  pA + pB === 0  ET  |pA| === |pB|
+          // Tout autre cas (home@+1 vs away@+1, home@+1 vs home@−1, etc.) est
+          // rejeté et compté pour traçabilité.
           const pA = Number(qA.point);
           const pB = Number(qB.point);
-          if (!isFinite(pA) || !isFinite(pB)) continue;
-          if (Math.abs(pA + pB) > 1e-9) continue;       // somme nulle exigée
-          if (Math.abs(Math.abs(pA) - Math.abs(pB)) > 1e-9) continue;
-          if (Math.sign(pA) === Math.sign(pB) && pA !== 0) continue; // sinon même côté
+          if (!isFinite(pA) || !isFinite(pB)) { rejectedSpreadAsym++; continue; }
+          if (Math.abs(pA + pB) > 1e-9) { rejectedSpreadAsym++; continue; }
+          if (Math.abs(Math.abs(pA) - Math.abs(pB)) > 1e-9) { rejectedSpreadAsym++; continue; }
+          // Signes opposés (sauf pA = pB = 0, cas Pick'em parfaitement valide).
+          if (pA !== 0 && Math.sign(pA) === Math.sign(pB)) { rejectedSpreadAsym++; continue; }
         } else if (isTotal) {
-          // Over et Under doivent partager exactement le même point.
+          // Over@P et Under@P : P EXACTEMENT identique des deux côtés.
           const pA = Number(qA.point);
           const pB = Number(qB.point);
-          if (!isFinite(pA) || !isFinite(pB)) continue;
-          if (Math.abs(pA - pB) > 1e-9) continue;
+          if (!isFinite(pA) || !isFinite(pB)) { rejectedTotalsPoint++; continue; }
+          if (Math.abs(pA - pB) > 1e-9) { rejectedTotalsPoint++; continue; }
         }
 
         const oA = normalizeToDecimal(qA.odds);
@@ -290,6 +321,19 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
         if (!result) continue;
 
         if (!passesFilters(result, filters, commenceTime)) continue;
+
+        // Garde-fou : un ROI anormalement élevé (>30 %) trahit presque toujours
+        // un appariement incorrect en amont (Spread non symétrique, Totals à
+        // points divergents, marché 3-way passé en force). On laisse passer
+        // l'opportunité mais on la signale pour audit.
+        if (result.roi > ROI_ANORMAL_THRESHOLD_PCT) {
+          warnHighRoi++;
+          logger.warn(
+            `ROI anormal détecté (${result.roi.toFixed(2)} %) — vérifier matcher : ` +
+            `${group.market_key} ${qA.bookmaker} ${labelA}@${qA.point ?? '-'} (${oA}) ` +
+            `vs ${qB.bookmaker} ${labelB}@${qB.point ?? '-'} (${oB}) event=${group.event_id}`
+          );
+        }
 
         // Récupère les URLs deep-link pour les bookmakers
         const urlA = getBookmakerUrl(provider, qA.bookmaker, event, labelA);
@@ -330,6 +374,23 @@ export function findOpportunities(quotes, events, stakeTotal, filters, provider)
         });
       }
     }
+  }
+
+  // Bilan des rejets — utile pour diagnostiquer un scan suspect.
+  if (rejectedSpreadAsym > 0) {
+    logger.info(`Matcher: ${rejectedSpreadAsym} paires Spread rejetées (handicaps non symétriques)`);
+  }
+  if (rejectedTotalsPoint > 0) {
+    logger.info(`Matcher: ${rejectedTotalsPoint} paires Totals rejetées (points différents)`);
+  }
+  if (rejectedSameSide > 0) {
+    logger.info(`Matcher: ${rejectedSameSide} paires rejetées (même côté du marché)`);
+  }
+  if (rejectedThreeWay > 0) {
+    logger.info(`Matcher: ${rejectedThreeWay} marchés rejetés (3+ issues, incompatible 2-way)`);
+  }
+  if (warnHighRoi > 0) {
+    logger.warn(`Matcher: ${warnHighRoi} opportunités à ROI > ${ROI_ANORMAL_THRESHOLD_PCT} % à vérifier`);
   }
 
   return opportunities;
